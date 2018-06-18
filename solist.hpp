@@ -169,6 +169,7 @@ namespace benedias {
             }
         }
 
+        //FIXME: expand is not thread safe!!! see comment at the end of the function.
         void expand(uint32_t curr_size)
         {
             if (curr_size < size)
@@ -186,11 +187,14 @@ namespace benedias {
                 new_buckets[x] = nullptr;
             }
 
-            //FIXME: update of buckets and size fields has to be combined atomically :-(
+            //FIXME:
+            // Intuitively swapping in the the new buckets and the size should
+            // be atomic w.r.t. other concurrent operations, so that matching
+            // buckets and size pair values are accessed.
             //Solution 1: ugly! :-(
-            // add another level of indirection, solist will be a wrapper around another
-            // class which has the buckets and size fields.
-            // indirection has performance impact.
+            // add another level of indirection, so_list will be a wrapper around another
+            // class which has the buckets and size fields, extra level
+            // of indirection has performance impact.
             buckets.swap(new_buckets);
             size = new_size;
         }
