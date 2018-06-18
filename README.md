@@ -20,3 +20,5 @@ Very much a work in progress.
 
 * hazard pointers have not been implemented (yet).
 * functionality tested in a single threaded manner for the moment.
+
+When finished this will be moved to blaisedias/concurrent
