@@ -233,6 +233,8 @@ namespace benedias {
 
         inline void advance()
         {
+            // TODO:  setup hazard pointers here in the required order
+            // and delete nodes traversed which marked for delete,
             prev = cur;
             cur = next;
             if (nullptr != cur)
@@ -241,37 +243,44 @@ namespace benedias {
 
         inline void zap()
         {
+            //TODO: clear the hazard pointers.
             prev = cur = next = nullptr;
+        }
+
+        void hazp_init()
+        {
+            // TODO: Acquire a block of 3 hazard pointers.
+            zap();
         }
 
         public:
         solist_accessor& operator=(const solist_accessor& other)
         {
             so_list = other.so_list;
-            zap();
+            hazp_init();
         }
 
         solist_accessor(solist_accessor const& other)
         {
             so_list = other.so_list;
-            zap();
+            hazp_init();
         }
 
         solist_accessor(std::shared_ptr<solist<T>> sl):so_list(sl)
         {
-            zap();
+            hazp_init();
         }
 
         explicit solist_accessor(uint32_t size)
         {
             so_list = std::make_shared<solist<T>>(size);
-            zap();
+            hazp_init();
         }
 
         explicit solist_accessor(uint32_t size, uint32_t bucket_length)
         {
             so_list = std::make_shared<solist<T>>(size, bucket_length);
-            zap();
+            hazp_init();
         }
 
 
