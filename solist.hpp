@@ -128,6 +128,9 @@ namespace benedias {
         solist& operator=(solist&&) = delete;
         solist(solist&&) = delete;
 
+        //FIXME: create a hazard pointer domain on instantiation.
+        //FIXME: add API for creation/acquisition and destroy/release
+        //of hazard pointer blocks.
         explicit solist(uint32_t size):size(size),buckets(new solist_bucket*[size])
         {
             for(uint32_t x=0; x < size; ++x)
@@ -235,7 +238,7 @@ namespace benedias {
         template <typename U> friend void check_solist(solist_accessor<U>& sol);
 #endif       
 
-        inline void advance()
+        inline bool advance()
         {
             // TODO:  setup hazard pointers here in the required order
             // and delete nodes traversed which marked for delete,
@@ -243,6 +246,7 @@ namespace benedias {
             cur = next;
             if (nullptr != cur)
                 next = cur->next();
+            return true;
         }
 
         inline void zap()
@@ -251,40 +255,52 @@ namespace benedias {
             prev = cur = next = nullptr;
         }
 
-        void hazp_init()
+        void hazp_acquire()
         {
-            // TODO: Acquire a block of 3 hazard pointers.
+            // TODO: Acquire a block of 3 hazard pointers from
+            // the solist instance.
+            // The hazard pointers *must* be in the "domain"
+            // associated with the solist instance.
             zap();
+        }
+
+        void hazp_release()
+        {
+            // TODO: Release the block of 3 hazard pointers back 
+            // to the solist, instance.
+            // The hazard pointers *must* be in the "domain"
+            // associated with the solist instance.
         }
 
         public:
         solist_accessor& operator=(const solist_accessor& other)
         {
+            hazp_release();
             so_list = other.so_list;
-            hazp_init();
+            hazp_acquire();
         }
 
         solist_accessor(solist_accessor const& other)
         {
             so_list = other.so_list;
-            hazp_init();
+            hazp_acquire();
         }
 
         solist_accessor(std::shared_ptr<solist<T>> sl):so_list(sl)
         {
-            hazp_init();
+            hazp_acquire();
         }
 
         explicit solist_accessor(uint32_t size)
         {
             so_list = std::make_shared<solist<T>>(size);
-            hazp_init();
+            hazp_acquire();
         }
 
         explicit solist_accessor(uint32_t size, uint32_t bucket_length)
         {
             so_list = std::make_shared<solist<T>>(size, bucket_length);
-            hazp_init();
+            hazp_acquire();
         }
 
 
@@ -293,6 +309,7 @@ namespace benedias {
         private:
         void get_parent(uint32_t slot, so_key key)
         {
+get_parent_try_again:
             prev = cur = so_list->buckets[0];
 
             while(slot-- != 0)
@@ -307,7 +324,10 @@ namespace benedias {
 
             while(nullptr != next && next->key < key)
             {
-                advance();
+                if (!advance())
+                {
+                    goto get_parent_try_again;
+                }
             }
         }
 
@@ -380,13 +400,17 @@ namespace benedias {
                 initialise_bucket(slot);
             }
             
+find_node_try_again:
             prev = cur = so_list->buckets[slot];
             next = cur->next();
 
             steps = 0;
             while((nullptr != next) && (next->key <= key))
             {
-                advance();
+                if (!advance())
+                {
+                    goto find_node_try_again;
+                }
                 ++steps;
             }
 
@@ -396,59 +420,6 @@ namespace benedias {
             }
             assert(cur->key == key);
             return true;
-        }
-
-        void speculative_expand(hash_t hashv)
-        {
-            uint32_t slot = hashv % so_list->size;
-            uint32_t span = 0;
-            uint32_t    nbuckets = so_list->size;
-
-            if(so_list->buckets[slot] == nullptr)
-            {
-                initialise_bucket(slot);
-            }
-            
-            prev = cur = so_list->buckets[slot];
-            next = cur->next();
-
-            while(nullptr != next && next->is_node())
-            {
-                advance();
-                ++span;
-            }
-
-            if (span >= so_list->max_bucket_length)
-            {
-                // expand if
-                // 1) the bucket is full by a factor of 2 FIXME (make the factor configurable) 
-                //      this can happen for pathological insert sequences where
-                //      inserts are to the same bucket repeatedly.
-                // 2) the all buckets are full
-                if (
-                        (span >= so_list->max_bucket_length * 2)
-                        ||
-                        (so_list->n_items >= (so_list->max_bucket_length * so_list->size))
-                   )
-                {
-                    so_list->expand(nbuckets);
-                }
-                {
-                    span = 0;
-                    prev = cur = so_list->buckets[slot];
-                    next = cur->next();
-                    while(nullptr != next && next->is_node())
-                    {
-                        if (so_list->buckets[slot] == nullptr)
-                        {
-                            span = 0;
-                            initialise_bucket(cur->hashv % so_list->size);
-                        }
-                        advance();
-                        ++span;
-                    }
-                }
-            }
         }
 
         public:
@@ -463,7 +434,6 @@ namespace benedias {
             uint32_t    nbuckets = so_list->size;
             auto dnode = new solist_node<T>(payload, hashv);
 
-//            speculative_expand(hashv);
             while(true)
             {
                 if(find_node(hashv))
@@ -491,11 +461,16 @@ namespace benedias {
                 // the expansion check.
 
                 next = cur->next();
-                //
+
                 // added a node, so do expansion check.
                 while(nullptr != next && next->is_node())
                 {
-                    advance();
+                    if (!advance())
+                    {
+                        // FIXME: for now chicken out and just return
+                        zap();
+                        return result;
+                    }
                     ++steps;
                 }
 
