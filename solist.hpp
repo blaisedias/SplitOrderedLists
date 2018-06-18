@@ -497,7 +497,14 @@ find_node_try_again:
                         // split the bucket we inserted into when a bucket
                         // "overflows", this is only effective if the bucket
                         // was not split following an expand.
-                        initialise_bucket(slot + (nbuckets/2));
+                        uint32_t ib_slot = slot + (nbuckets/2);
+                        // Check that the bucket exists before attempting to 
+                        // initialise it.
+                        // This is a result of delaying expensive expansion.
+                        if (ib_slot < so_list->size)
+                        {
+                            initialise_bucket(ib_slot);
+                        }
                     }
                 }
             }
