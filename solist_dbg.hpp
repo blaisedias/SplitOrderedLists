@@ -31,14 +31,14 @@ namespace benedias {
 
         fprintf(stderr,
                 "(=== dump_solist_buckets %p\n", &sol);
-        for(uint32_t x=0; x < sol->size; ++x)
+        for(uint32_t x=0; x < sol->n_buckets; ++x)
         {
             if (nullptr != sol->buckets[x])
             {
                 fprintf(stderr,"%d) %p 0x%08x 0x%08x %d\n", x, sol->buckets[x],
                         sol->buckets[x]->key,
                         sol->buckets[x]->hashv,
-                        sol->buckets[x]->hashv % sol->size
+                        sol->buckets[x]->hashv % sol->n_buckets
                         );
             }
             else
@@ -95,7 +95,7 @@ namespace benedias {
 
         solist_bucket *cur = sol->buckets[0];
         fprintf(stderr,
-                "(=== dump_solist %p size=%d", &sol, sol->size);
+                "(=== dump_solist %p n_buckets=%d", &sol, sol->n_buckets);
         while(cur)
         {
             if (cur->key & DATABIT)
@@ -113,7 +113,7 @@ namespace benedias {
         std::cerr << std::endl;
 #if 0
         std::cerr << "buckets" << std::endl;
-        for(uint32_t x=0; x < sol->size; ++x)
+        for(uint32_t x=0; x < sol->n_buckets; ++x)
         {
             fprintf(stderr,"%d) ", x);
             if (nullptr != sol->buckets[x])
@@ -138,7 +138,7 @@ namespace benedias {
 
         solist_bucket *cur = sol->buckets[0];
         fprintf(stderr,
-                "(=== dump_solist_items %p size=%d\n", &sol, sol->size);
+                "(=== dump_solist_items %p n_buckets=%d\n", &sol, sol->n_buckets);
         while(cur)
         {
             if (cur->key & DATABIT)

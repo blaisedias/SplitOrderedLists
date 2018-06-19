@@ -115,7 +115,7 @@ namespace benedias {
 
     template <typename T> struct solist
     {
-        uint32_t            size;
+        uint32_t            n_buckets;
         uint32_t            max_bucket_length = 4;
         uint32_t            n_items = 0;
         std::unique_ptr<solist_bucket*[]>     buckets = nullptr;
@@ -131,9 +131,9 @@ namespace benedias {
         //FIXME: create a hazard pointer domain on instantiation.
         //FIXME: add API for creation/acquisition and destroy/release
         //of hazard pointer blocks.
-        explicit solist(uint32_t size):size(size),buckets(new solist_bucket*[size])
+        explicit solist(uint32_t size):n_buckets(size),buckets(new solist_bucket*[size])
         {
-            for(uint32_t x=0; x < size; ++x)
+            for(uint32_t x=0; x < n_buckets; ++x)
             {
                 buckets[x] = nullptr;
             }
@@ -150,9 +150,9 @@ namespace benedias {
             __atomic_sub_fetch(&n_items, 1, __ATOMIC_RELEASE); 
         }
 
-        explicit solist(uint32_t size, uint32_t bucket_length):size(size),max_bucket_length(bucket_length),buckets(new solist_bucket*[size])
+        explicit solist(uint32_t size, uint32_t bucket_length):n_buckets(size),max_bucket_length(bucket_length),buckets(new solist_bucket*[size])
         {
-            for(uint32_t x=0; x < size; ++x)
+            for(uint32_t x=0; x < n_buckets; ++x)
             {
                 buckets[x] = nullptr;
             }
@@ -175,31 +175,31 @@ namespace benedias {
         //FIXME: expand is not thread safe!!! see comment at the end of the function.
         void expand(uint32_t curr_size)
         {
-            if (curr_size < size)
+            if (curr_size < n_buckets)
             {
                 return;
             }
-            uint32_t new_size = size * 2;
+            uint32_t new_size = n_buckets * 2;
             auto new_buckets = std::make_unique<solist_bucket*[]>(new_size);
-            for (uint32_t x=0; x < size; ++x)
+            for (uint32_t x=0; x < n_buckets; ++x)
             {
                 new_buckets[x] = buckets[x];
             }
-            for (uint32_t x=size; x < new_size; ++x)
+            for (uint32_t x=n_buckets; x < new_size; ++x)
             {
                 new_buckets[x] = nullptr;
             }
 
             //FIXME:
-            // Intuitively swapping in the the new buckets and the size should
+            // Intuitively swapping in the the new buckets and n_buckets should
             // be atomic w.r.t. other concurrent operations, so that matching
-            // buckets and size pair values are accessed.
+            // buckets and n_buckets pair values are accessed.
             //Solution 1: ugly! :-(
             // add another level of indirection, so_list will be a wrapper around another
-            // class which has the buckets and size fields, extra level
+            // class which has the buckets and n_buckets fields, extra level
             // of indirection has performance impact.
             buckets.swap(new_buckets);
-            size = new_size;
+            n_buckets = new_size;
         }
     };
 
@@ -310,18 +310,26 @@ namespace benedias {
         void get_parent(uint32_t slot, so_key key)
         {
 get_parent_try_again:
-            prev = cur = so_list->buckets[0];
-
-            while(slot-- != 0)
+            //find the intiialised bucket with highest key value 
+            //that is lower than key.
+            so_key key_step = sol_bucket_key(so_list->n_buckets/2);
+            so_key pb_key = key;
+            uint32_t pb_slot;
+            do
             {
-                if (so_list->buckets[slot])
+                pb_key -= key_step;
+                pb_slot = reverse_hasht_bits(pb_key);
+                if (so_list->buckets[pb_slot])
                 {
-                    prev = cur = so_list->buckets[slot];
+                    break;
                 }
-            }
+            }while(0 != pb_key);
 
+            // and then advance to the last data node in that bucket,
+            // there may be none.
+            prev = cur = so_list->buckets[pb_slot];
             next = cur->next();
-
+    
             while(nullptr != next && next->key < key)
             {
                 if (!advance())
@@ -334,7 +342,7 @@ get_parent_try_again:
         public:
         void initialise_bucket(hash_t slot)
         {
-            assert(slot < so_list->size);
+            assert(slot < so_list->n_buckets);
 
             if (so_list->buckets[slot] != nullptr)
             {
@@ -391,7 +399,7 @@ get_parent_try_again:
         private:
         bool find_node(hash_t hashv)
         {
-            uint32_t slot = hashv % so_list->size;
+            uint32_t slot = hashv % so_list->n_buckets;
             so_key key = sol_node_key(hashv);
 
             if(so_list->buckets[slot] == nullptr)
@@ -431,7 +439,7 @@ find_node_try_again:
         bool insert_node(hash_t hashv, T payload)
         {
             bool result = false;
-            uint32_t    nbuckets = so_list->size;
+            uint32_t    nbuckets = so_list->n_buckets;
             auto dnode = new solist_node<T>(payload, hashv);
 
             while(true)
@@ -477,7 +485,7 @@ find_node_try_again:
                 if(steps > so_list->max_bucket_length)
                 {
                     // Record the bucket number before expansion.
-                    uint32_t slot = hashv % so_list->size;
+                    uint32_t slot = hashv % so_list->n_buckets;
                     // expand if
                     // 1) the bucket is overflows by a factor of 2 FIXME (make the factor configurable) 
                     //      this can happen for pathological insert sequences where
@@ -486,7 +494,7 @@ find_node_try_again:
                     if (
                             (steps >= ((so_list->max_bucket_length * 2)))
                             ||
-                            (so_list->n_items >= (so_list->max_bucket_length * so_list->size))
+                            (so_list->n_items >= (so_list->max_bucket_length * so_list->n_buckets))
                        )
                     {
                         so_list->expand(nbuckets);
@@ -501,7 +509,7 @@ find_node_try_again:
                         // Check that the bucket exists before attempting to 
                         // initialise it.
                         // This is a result of delaying expensive expansion.
-                        if (ib_slot < so_list->size)
+                        if (ib_slot < so_list->n_buckets)
                         {
                             initialise_bucket(ib_slot);
                         }
@@ -554,6 +562,8 @@ find_node_try_again:
                 solist_node<T>* node = dynamic_cast<solist_node<T>*>(cur);
                 return node->get_item_ptr();
             }
+
+            return nullptr;
         }
     };
 
