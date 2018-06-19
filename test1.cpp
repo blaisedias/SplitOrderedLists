@@ -34,19 +34,11 @@ using   benedias::concurrent::hash_t;
 void test0_1(hash_t h[3])
 {
     solist_accessor<uint32_t> sol(4);
-//    benedias::concurrent::dump_solist_buckets(sol);
-//    benedias::concurrent::dump_solist(sol);
     sol.initialise_bucket(h[0]);
-//    benedias::concurrent::dump_solist_buckets(sol);
-//    benedias::concurrent::dump_solist(sol);
     sol.initialise_bucket(h[1]);
-//    benedias::concurrent::dump_solist_buckets(sol);
     sol.initialise_bucket(h[2]);
-//    benedias::concurrent::dump_solist_buckets(sol);
+    benedias::concurrent::dump_solist(sol);
     benedias::concurrent::check_solist(sol);
-    benedias::concurrent::dump_solist_keys(sol);
-//    benedias::concurrent::dump_solist_key_order(sol);
-//    benedias::concurrent::dump_solist(sol);
 }
 
 
@@ -93,19 +85,19 @@ void test1()
     {
         hash_t t3[4]={2,3,1,0};
         test1_1(sol, t3);
-        benedias::concurrent::dump_solist_buckets(sol);
-        benedias::concurrent::dump_solist_key_order(sol);
         std::cout << "----------" << std::endl;
     }
     sol.insert_node(2, 2);
     sol.insert_node(1, 1);
-    benedias::concurrent::dump_solist_buckets(sol);
-    benedias::concurrent::dump_solist_key_order(sol);
+//    benedias::concurrent::dump_solist_buckets(sol);
+//    benedias::concurrent::dump_solist_key_order(sol);
     benedias::concurrent::dump_solist(sol);
 }
 
 // simple test of bucket initialisation, node insertion and node deletion
-void test3()
+// hash values are optimally geberated, you should end up with 8 buckets
+// of 4 entries each, before the deletes.
+void test2()
 {
     solist_accessor<uint32_t> sol(2);
     bool marked[32];
@@ -146,7 +138,15 @@ void test3()
     benedias::concurrent::dump_solist(sol);
     benedias::concurrent::check_solist(sol);
 
-    std::cout << std::endl << "-- Deleting 30, 0 and 31" << std::endl << std::endl;
+    std::cout << std::endl << "-- Checking find" << std::endl << std::endl;
+    for(hash_t x = 0; x < 32; ++x)
+    {
+        if (nullptr == sol.find_item_node(x))
+        {
+            std::cout << "Failed! could not find item with hash " << x << std::endl;
+        }
+    }
+    std::cout << "-- Deleting 30, 0 and 31" << std::endl << std::endl;
     sol.delete_node(30);
     sol.delete_node(0);
     sol.delete_node(31);
@@ -157,15 +157,78 @@ void test3()
 }
 
 
+// test adds 32 randomly generated nodes.
+void test3()
+{
+    solist_accessor<uint32_t> sol(2);
+    uint32_t n_gen = 0;
+
+    while(n_gen <= 32)
+    {
+        uint32_t v = static_cast<uint32_t>(rand());
+        std::cerr << v << " ";
+        if (sol.find_item_node(v) == nullptr)
+        {
+            sol.insert_node(v, v);
+            ++n_gen;
+        }
+    }
+
+    std::cerr << std::endl;
+    benedias::concurrent::dump_solist_items(sol);
+    benedias::concurrent::dump_solist(sol);
+    benedias::concurrent::check_solist(sol);
+}
+
+#if 0
+void testx()
+{
+    constexpr   unsigned n_buckets=8;
+//    uint32_t v = static_cast<uint32_t>(rand()) % n_buckets;
+    uint32_t slot = 5;
+    uint32_t key_n_buckets = benedias::concurrent::sol_bucket_key(n_buckets);
+    uint32_t key_step = benedias::concurrent::sol_bucket_key(n_buckets/2);
+    
+    benedias::concurrent::so_key key = benedias::concurrent::sol_bucket_key(slot);
+    printf("key=%x bucket_from_key=%d bucket_from_n_buckets=%x key_step=%x\n",
+            key,
+            benedias::concurrent::reverse_hasht_bits(key),
+            key_n_buckets,
+            key_step
+            );
+    do
+    {
+        key -= key_step;
+        slot = benedias::concurrent::reverse_hasht_bits(key);
+        printf("key=%x slot_from_key=%d\n",
+            key,
+            benedias::concurrent::reverse_hasht_bits(key));
+
+    }while(key);
+}
+#endif
+
 int main( int argc, char* argv[] )
 {
     std::setlocale(LC_ALL, "en_US.UTF-8");
     std::srand(std::time(nullptr)); // use current time as seed for random generator
-#if 0
-    test0();
-    test1();
-#endif
-    test3();
+    void (*tf)() = test3;
+    if (argc > 1)
+    {
+        switch(*argv[1])
+        {
+            case '0':
+                tf = test0; break;
+            case '1':
+                tf = test1; break;
+            case '2':
+                tf = test2; break;
+            case '3':
+                tf = test3; break;
+        }
+    }
+
+    tf();
     std::cout << "All Done. " << std::endl;
     return 0;
 }
