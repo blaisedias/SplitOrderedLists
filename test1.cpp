@@ -180,11 +180,11 @@ void test3()
     benedias::concurrent::check_solist(sol);
 }
 
-#if 0
+
+// experimental function
 void testx()
 {
     constexpr   unsigned n_buckets=8;
-//    uint32_t v = static_cast<uint32_t>(rand()) % n_buckets;
     uint32_t slot = 5;
     uint32_t key_n_buckets = benedias::concurrent::sol_bucket_key(n_buckets);
     uint32_t key_step = benedias::concurrent::sol_bucket_key(n_buckets/2);
@@ -206,7 +206,6 @@ void testx()
 
     }while(key);
 }
-#endif
 
 int main( int argc, char* argv[] )
 {
@@ -225,6 +224,8 @@ int main( int argc, char* argv[] )
                 tf = test2; break;
             case '3':
                 tf = test3; break;
+            case 'x':
+                tf = testx; break;
         }
     }
 
