@@ -27,14 +27,14 @@ OD = ./obj
 LIBS = $(TARG_LIBS)
 SANITIZE =  -fsanitize=safe-stack 
 SANITIZE =  -fsanitize=address -fno-omit-frame-pointer -fsanitize=undefined
-#SANITIZE =  -fsanitize=memory -fno-omit-frame-pointer -fsanitize=undefined
+SANITIZE =  -fsanitize=memory -fno-omit-frame-pointer -fsanitize=undefined
 GD = ./Makefile
 CF = -std=c++14 -Wall -g $(TARG_CF) $(DEFS) $(SANITIZE)
 CC = clang++
 
 OBJS = 	
 
-all: $(BIN)/test1 $(BIN)/test_expansion
+all: $(BIN)/test1 $(BIN)/test_expansion $(BIN)/hptest
 
 .PHONY: clean
 
@@ -79,6 +79,8 @@ $(BIN)/test1 : $(OD)/test1.o $(OD)/solist.o | $(BIN)
 $(BIN)/test_expansion : $(OD)/test_expansion.o $(OD)/solist.o | $(BIN)
 	$(CC) $(CF) -o $(@) $^ $(LIBDIRS) $(LIBS)
 
+$(BIN)/hptest : $(OD)/hptest.o | $(BIN)
+	$(CC) $(CF) -o $(@) $^ $(LIBDIRS) $(LIBS)
 
 $(BIN):
 	mkdir -p $@
