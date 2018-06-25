@@ -47,7 +47,20 @@ struct  B
     }
     ~B()
     {
+#if 0
+        // :-( MSAN generates a fault for this, but not the equivalent 
+        // sequence of statements below.
+        // This is because MSAN requires all libraries linked against,
+        // including libc to be built with --fsanitize=memory.
+        // For now we will evade that issue, MSAN has been useful.
         indent(); std::cout << "DTOR B " << this << " " << v << std::endl;
+#else
+        indent(); 
+        std::cout << "DTOR B ";
+        std::cout << this;
+        std::cout << " " << v;
+        std::cout << std::endl;
+#endif
     }
 
     friend std::ostream& operator << (std::ostream& ostream, const B& b)

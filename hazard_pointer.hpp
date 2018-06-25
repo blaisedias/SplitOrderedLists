@@ -39,47 +39,74 @@ along with this file.  If not, see <http://www.gnu.org/licenses/>.
 //with a few judiciously placed reinterpret_cast or dynamic_cast statements.
 namespace benedias {
     namespace concurrent {
-        //Pool of hazard pointers, which are allocated (reserve)
-        //and freed (release) atomically.
-        template <typename T, unsigned S> struct hazp_pool
-        {
-            static constexpr uint32_t  FULL = -1;
-            // Pools of hazard pointers can be chained.
-            struct hazp_pool<T, S> *next = nullptr;
+        // Hazard pointer storage type for generic manipulation of hazard pointers
+        // the algorithms only use pointer values not contents,
+        // so a single implementation independent of type suffices.
+        typedef void*   hazptr_st;
+        class hazp_pool_generic {
+            private:
+            static constexpr uint32_t  FULL = UINT32_MAX;
+
+            hazptr_st   *haz_ptrs = nullptr;
             // bitmap of reserved hazard pointers (blocks of size S)
-            uint32_t bitmap = 0;
-            T* array[32 * S];
+            uint32_t    bitmap=0;
 
-            hazp_pool()=default;
-            ~hazp_pool()=default;
+            protected:
+            static constexpr unsigned  NUM_HAZP_POOL_BLOCKS=32;
+            const unsigned  blk_size;
+            const unsigned  hp_count;
 
-            unsigned block_size() { return S; }
-            unsigned count() { return 32 * S; }
-
-            T** reserve()
+            hazp_pool_generic(unsigned bsize):blk_size(bsize),hp_count(bsize * NUM_HAZP_POOL_BLOCKS)
             {
-                uint32_t    mask;
-                uint32_t    ix;
-                T** reserved = nullptr;
+                haz_ptrs = new hazptr_st[hp_count];
+                std::memset(haz_ptrs, 0, sizeof(*haz_ptrs) * hp_count);
+            }
 
-                uint32_t expected = bitmap;
+            virtual ~hazp_pool_generic()
+            {
+                delete [] haz_ptrs;
+            }
+
+            protected:
+            unsigned copy_hazard_pointers(void *dest, unsigned count)
+            {
+                if (count > hp_count)
+                    count = hp_count;
+                std::memcpy(dest, haz_ptrs, count);
+                return count;
+            }
+
+            hazptr_st* reserve_impl(unsigned len)
+            {
+                uint32_t    mask=1;
+                uint32_t    ix=0;
+                hazptr_st*  reserved = nullptr;
+                uint32_t    expected = bitmap;
+
+                if (len != blk_size)
+                    return nullptr;
                 while (expected != FULL && nullptr == reserved)
                 {
                     mask = 1;
                     ix = 0;
-                    while (0 != (expected & mask) && ix < 32)
+                    while (0 != (expected & mask) && ix < NUM_HAZP_POOL_BLOCKS)
                     {
                         mask <<= 1;
                         ++ix;
                     }
 
-                    if (ix < 32)
+                    if (ix < NUM_HAZP_POOL_BLOCKS)
                     {
                         uint32_t desired = expected | mask;
                         if(__atomic_compare_exchange(&bitmap, &expected, &desired,
                                 false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
                         {
-                            reserved = &array[ix * S];
+                            reserved = &haz_ptrs[ix * blk_size];
+                        }
+                        else
+                        {
+                            // CAS failed, so expected will have been updated to the new value
+                            // of bitmap.
                         }
                     }
                 }
@@ -87,19 +114,18 @@ namespace benedias {
                 return reserved;
             }
 
-            bool release(T** ptr)
+            bool release_impl(hazptr_st* ptr)
             {
-                if (ptr < &array[0] || ptr >= &array[32 * S])
+                if (ptr < &haz_ptrs[0] || ptr >= &haz_ptrs[hp_count])
                     return false;
-
                 uint32_t    mask=1;
-                for(auto x = 0; x < S; x++)
+                for(auto x = 0; x < blk_size; x++)
                 {
-                    ptr[x] = nullptr;
+                    ptr[x] = 0;
                 }
-                for(unsigned ix = 0; ix < 32; ++ix)
+                for(unsigned ix = 0; ix < NUM_HAZP_POOL_BLOCKS; ++ix)
                 {
-                    if(ptr == &array[ix * S])
+                    if(ptr == &haz_ptrs[ix * blk_size])
                     {
                         assert(mask == (bitmap & mask));
                         uint32_t    expected, desired;
@@ -115,13 +141,49 @@ namespace benedias {
                 }
 
                 return true;
+            }        
+        };
+
+        //Pool of hazard pointers, which are allocated (reserve)
+        //and freed (release) atomically.
+        template <typename T> struct hazp_pool:hazp_pool_generic
+        {
+            // Pools of hazard pointers can be chained.
+            hazp_pool<T> *next = nullptr;
+
+            hazp_pool(unsigned blk_size):hazp_pool_generic(blk_size){}
+            ~hazp_pool()=default;
+
+            inline unsigned block_size()
+            {
+                return hazp_pool_generic::blk_size;
+            }
+
+            inline unsigned count()
+            { 
+                return hazp_pool_generic::hp_count;
+            }
+
+            inline T** reserve(unsigned len)
+            {
+                return reinterpret_cast<T**>(hazp_pool_generic::reserve_impl(len));
+            }
+
+            inline bool release(T** ptr)
+            {
+                return hazp_pool_generic::release_impl(reinterpret_cast<hazptr_st*>(ptr));
+            }
+
+            inline unsigned copy_hazard_pointers(T** dest, unsigned num)
+            {
+                return hazp_pool_generic::copy_hazard_pointers(dest, num);
             }
         };
 
         //Holds pointer to a deleted object of type T
         template <typename T> struct hazp_delete_node
         {
-            struct hazp_delete_node<T>* next;
+            hazp_delete_node<T>* next;
             T* payload;
 
             hazp_delete_node(T* datap):payload(datap) {}
@@ -133,16 +195,86 @@ namespace benedias {
         template <typename T> class hazard_pointer_domain
         {
             private:
+            // For now keep two lists of hazard pointer pools
+            // TODO: Consider using a single list for pools, and
+            // allow pools with arbitrary block sizes;
+            // sizes. The down-side is performance at reservation and release,
+            // since single list would have to be traversed until the correct
+            // pool is found.
             // linked lists of hazard pointer pools.
-            struct hazp_pool<T, 1>* singles_head = new hazp_pool<T, 1>();
-            // The triples pool exists to meet the requirement for lock-free
-            // singly linked lists.
-            struct hazp_pool<T, 3>* triples_head = new hazp_pool<T, 3>();
+            hazp_pool<T>* pools_head = nullptr;
 
             //list of deleted nodes overflow from hazard_pointer_context instances,
-            //or no longer in a hazard_pointer_context scope (The context was destroyed).
+            //or no longer in a hazard_pointer_context scope (the 
+            //hazard_pointer_context instance was destroyed, but deletes were
+            //pending).
             //FIXME: volatile? or atomic load from/store to?
-            struct hazp_delete_node<T>* delete_head = nullptr;
+            hazp_delete_node<T>* delete_head = nullptr;
+
+            void pools_new(hazp_pool<T>** phead, unsigned blocklen)
+            {
+                hazp_pool<T>* pool = new hazp_pool<T>(blocklen);
+                do
+                {
+                    pool->next = *phead;
+                }while(!__atomic_compare_exchange(phead, &pool->next, &pool,
+                            false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED));
+            }
+
+            void delete_pools(hazp_pool<T>* head)
+            {
+                for(auto p = head; nullptr != p; )
+                {
+                    auto pnext = p->next;
+                    delete p;
+                    p = pnext;
+                }
+            }
+
+            bool pools_release(hazp_pool<T>* head, T**ptr)
+            {
+                bool released = false;
+                for(auto p = head; nullptr != p && !released; )
+                {
+                    auto pnext = p->next;
+                    released = p->release(ptr);
+                    p = pnext;
+                }
+                return released;
+            }
+
+            unsigned pools_count_ptrs(hazp_pool<T>* head)
+            {
+                unsigned count = 0;
+                for(auto p = head; nullptr != p; )
+                {
+                    count += p->count();
+                    p = p->next;
+                }
+                return count;
+            }
+
+            unsigned pools_copy_ptrs(hazp_pool<T>* head, T**dest, unsigned len)
+            {
+                unsigned count = 0;
+                for(auto p = head; nullptr != p; )
+                {
+                    assert(count + p->count() <= len);
+                    count += p->copy_hazard_pointers(dest + count, p->count());
+                    p = p->next;
+                }
+                return count;
+            }
+
+            T** pools_reserve(hazp_pool<T>* head, unsigned blocklen)
+            {
+                T** reservation = nullptr;
+                for(auto p = head; nullptr != p && nullptr == reservation; )
+                {
+                    reservation = p->reserve(blocklen);
+                }
+                return reservation;
+            }
 
             public:
 
@@ -150,64 +282,41 @@ namespace benedias {
             ~hazard_pointer_domain()
             {
                 collect();
-                // If we are terminating, then all items schedule for delete
+                // If we are terminating, then all items schedulde for delete
                 // should be deleted.
                 // FIXME: all associated hazard_pointer_context instances 
                 // should be destroyed. at the very least we should check
                 // assert, or emit a warning message.
+                // Alternatively hazard_pointer_context instances use a shared
+                // pointer to the hazard_pointer_domain.
                 assert(nullptr == delete_head);
-                for(auto p = singles_head; nullptr != p; )
-                {
-                    auto pnext = p->next;
-                    delete p;
-                    p = pnext;
-                }
-                for(auto p = triples_head; nullptr != p; )
-                {
-                    auto pnext = p->next;
-                    delete p;
-                    p = pnext;
-                }
-            }
+                delete_pools(pools_head);
+           }
 
             T** reserve(unsigned blocklen)
             {
-                if(blocklen == 1)
-                    return singles_head->reserve();
-                if(blocklen == 3)
-                    return triples_head->reserve();
-                return nullptr;
+                T** reservation = pools_reserve(pools_head, blocklen);
+                if (nullptr == reservation)
+                {
+                    pools_new(&pools_head, blocklen);
+                }
+                reservation = pools_reserve(pools_head, blocklen);
+                assert(nullptr != reservation);
+                return reservation;
             }
 
             void release(T** ptr)
             {
-                bool released = false;
-                {
-                    auto p = singles_head;
-                    while(p && !released)
-                    {
-                        released = p->release(ptr);
-                        p=p->next;
-                    }
-                }
-                {
-                    auto p = triples_head;
-                    while(p && !released)
-                    {
-                        released = p->release(ptr);
-                        p=p->next;
-                    }
-                }
+                bool released = pools_release(pools_head, ptr);
                 assert(released);
             }
 
-            void push_delete_node(struct hazp_delete_node<T>* del_node)
+            void push_delete_node(hazp_delete_node<T>* del_node)
             {
-                struct hazp_delete_node<T>* desired;
+                hazp_delete_node<T>* desired = del_node;
                 do
                 {
                     del_node->next = delete_head;
-                    desired = del_node;
                 }
                 while(!__atomic_compare_exchange(&delete_head, &del_node->next, &desired,
                             false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED));
@@ -215,7 +324,7 @@ namespace benedias {
 
             inline void enqueue_for_delete(T* item_ptr)
             {
-                auto del_entry = new struct hazp_delete_node<T>(item_ptr);
+                auto del_entry = new hazp_delete_node<T>(item_ptr);
                 push_delete_node(del_entry);
             }
 
@@ -233,8 +342,8 @@ namespace benedias {
 
             static int cmphp(const void* ap, const void* bp)
             {
-                uintptr_t v1 = *((uintptr_t*)ap);
-                uintptr_t v2 = *((uintptr_t*)bp);
+                hazptr_st v1 = *((hazptr_st*)ap);
+                hazptr_st v2 = *((hazptr_st*)bp);
                 if(v1 < v2)
                     return -1;
                 if(v1 > v2)
@@ -245,49 +354,14 @@ namespace benedias {
             //TODO: try a version with vectors to measure performance.
             T** snapshot_ptrs(unsigned *pcount)
             {
-                unsigned count = 0;
-                {
-                    auto p = singles_head;
-                    while(p)
-                    {
-                        count += p->count();
-                        p = p->next;
-                    }
-                }
-                {
-                    auto p = triples_head;
-                    while(p)
-                    {
-                        count += p->count();
-                        p = p->next;
-                    }
-                }
+                unsigned count = pools_count_ptrs(pools_head);
 
                 *pcount = count;
-                unsigned ix = 0;
                 T** hpvalues = new T*[count];
                 std::memset(hpvalues, 0, sizeof(*hpvalues) * count);
-                {
-                    auto p = triples_head;
-                    while(p)
-                    {
-                        assert(ix + p->count() <= count);
-                        std::memcpy(hpvalues + ix, p->array, p->count());
-                        ix += p->count();
-                        p = p->next;
-                    }
-                }
-                {
-                    auto p = singles_head;
-                    while(p)
-                    {
-                        assert(ix + p->count() <= count);
-                        std::memcpy(hpvalues + ix, p->array, p->count());
-                        ix += p->count();
-                        p = p->next;
-                    }
-                }
-                assert(ix == count);
+                unsigned n_copied = pools_copy_ptrs(pools_head, hpvalues, count);
+                assert(n_copied == count);
+
 #if 1       // clang memory sanitizer was generating errors even though qsort was not :-(
                 std::sort(hpvalues, hpvalues+count);
 #else
@@ -319,20 +393,20 @@ namespace benedias {
             }
 
             //FIXME: serialise execution of this function.
+            //FIXME: need to come up with a scheme to run this function
+            //often enough if there is items to be deleted.
             void collect()
             {
-                struct hazp_delete_node<T>* del_head = __atomic_exchange_n(
+                hazp_delete_node<T>* del_head = __atomic_exchange_n(
                         &delete_head, nullptr,  __ATOMIC_ACQ_REL);
                 T** hp_values;
-                T** hp_values_end;
                 unsigned num_values;
                 hp_values = snapshot_ptrs(&num_values);
-                hp_values_end = hp_values + num_values;
 
-                struct hazp_delete_node<T>** pprev = &del_head;
+                hazp_delete_node<T>** pprev = &del_head;
                 while(nullptr != *pprev)
                 {
-                    struct hazp_delete_node<T>* cur = *pprev;
+                    hazp_delete_node<T>* cur = *pprev;
                     if (!search(cur->payload, hp_values, num_values))
                     {
                         // delink
@@ -400,10 +474,8 @@ namespace benedias {
                 {
                     // overflow
                     T** hp_values;
-                    T** hp_values_end;
                     unsigned num_values;
                     hp_values = domain->snapshot_ptrs(&num_values);
-                    hp_values_end = hp_values + num_values;
                     for(unsigned ix=0; ix < R; ++ix)
                     {
                         if (!domain->search(deleted[ix], hp_values, num_values))
