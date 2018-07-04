@@ -270,17 +270,6 @@ namespace benedias {
                 return released;
             }
 
-            void pools_copy_ptrs(const hazp_pool<T>* head, T**dest, unsigned len)
-            {
-                unsigned count = 0;
-                for(auto p = head; nullptr != p && count < len; p = p->next)
-                {
-                    assert(count + p->count() <= len);
-                    count += p->copy_hazard_pointers(dest + count, p->count());
-                }
-                assert(count == len);
-            }
-
             public:
 
             hazard_pointer_domain()=default;
@@ -366,13 +355,20 @@ namespace benedias {
                 }
 
                 T** hpvalues = new T*[count];
+
+                //FIXME: should not be required, since we are std::mempcpy pool hazard pointer blocks.
                 std::memset(hpvalues, 0, sizeof(*hpvalues) * count);
+
                 // Then copy that number of pointers from the pools,
                 // if new pools have been added since the snapshot of the count,
                 // those values cannot be of interest in the snapshot *because*
                 // new pointers to deleted items cannot be created. 
-                pools_copy_ptrs(pools, hpvalues, count);
-
+                unsigned ncopied = 0;
+                for(auto p = pools; nullptr != p; p = p->next)
+                {
+                    ncopied += p->copy_hazard_pointers(hpvalues + ncopied, p->count());
+                }
+                assert(ncopied == count);
                 std::sort(hpvalues, hpvalues+count);
                
                 *pcount = count;
