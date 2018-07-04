@@ -28,42 +28,31 @@ namespace concurrent {
 constexpr   uintptr_t   mark_bits_mask=1;
 constexpr   uintptr_t   mark_bits_maskoff=~mark_bits_mask;
 
-template <typename T> union union_ptr_uintptr_t 
-{
-    T*  ptr;
-    uintptr_t   v;
-
-    union_ptr_uintptr_t():ptr(nullptr) {}
-    explicit union_ptr_uintptr_t(T* p):ptr(p) {}
-};
-
-
 template <typename T> class mark_ptr_type
 {
     private:
-        union_ptr_uintptr_t<T>   ptr_v;
+        uintptr_t   upv = 0;
     public:
 
     inline void operator=(T* p)
     {
-        ptr_v.ptr = p;
-        assert(0 == (ptr_v.v & mark_bits_mask));
+        upv = reinterpret_cast<uintptr_t>(p) | (upv & mark_bits_mask);
     }
 
     inline T* operator()(bool *mark)
     {
-        mark = 0 != (ptr_v.v & mark_bits_mask);
-        return reinterpret_cast<T*>(ptr_v.v & mark_bits_maskoff);
+        *mark = (0 != (upv & mark_bits_mask));
+        return reinterpret_cast<T*>(upv & mark_bits_maskoff);
     }
 
     inline T* operator()()
     {
-        return reinterpret_cast<T*>(ptr_v.v & mark_bits_maskoff);
+        return reinterpret_cast<T*>(upv & mark_bits_maskoff);
     }
 
     inline T* operator->()
     {
-        return reinterpret_cast<T*>(ptr_v.v & mark_bits_maskoff);
+        return reinterpret_cast<T*>(upv & mark_bits_maskoff);
     }
 
     explicit mark_ptr_type()
@@ -72,44 +61,69 @@ template <typename T> class mark_ptr_type
 
     explicit mark_ptr_type(T* p)
     {
-        ptr_v.ptr = p;
-        assert(0 == (ptr_v.v & mark_bits_mask));
+        upv =  reinterpret_cast<uintptr_t>(p);
     }
 
     inline bool CAS(T* expected, T* desired)
     {
-        union_ptr_uintptr_t<T> pv_expected(expected);
-        union_ptr_uintptr_t<T> pv_desired(desired);
-        return __atomic_compare_exchange(&ptr_v.v, &pv_expected.v, &pv_desired.v,
+        uintptr_t pv_expected = reinterpret_cast<uintptr_t>(expected);
+        uintptr_t pv_desired = reinterpret_cast<uintptr_t>(desired);
+        return __atomic_compare_exchange(&upv, &pv_expected, &pv_desired,
                    false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
     }
 
     inline bool CAS(T* expected, T* desired, bool mark)
     {
-        union_ptr_uintptr_t<T> pv_expected(expected);
-        union_ptr_uintptr_t<T> pv_desired(desired);
+        uintptr_t pv_expected = reinterpret_cast<uintptr_t>(expected);
+        uintptr_t pv_desired = reinterpret_cast<uintptr_t>(desired);
         if (mark)
         {
-            pv_desired.v |= mark_bits_mask;
+            pv_desired |= mark_bits_mask;
         }
-        return __atomic_compare_exchange(&ptr_v.v, &pv_expected.v, &pv_desired.v,
+        return __atomic_compare_exchange(&upv, &pv_expected, &pv_desired,
                    false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+    }
+
+    inline bool CAS(T* expected, bool mark)
+    {
+        uintptr_t pv_expected = reinterpret_cast<uintptr_t>(expected);
+        uintptr_t pv_desired = reinterpret_cast<uintptr_t>(expected);
+        if (mark)
+        {
+            pv_desired |= mark_bits_mask;
+        }
+        return __atomic_compare_exchange(&upv, &pv_expected, &pv_desired,
+                   false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+    }
+
+    inline bool mark()
+    {
+        uintptr_t v = __atomic_fetch_or(&upv, mark_bits_mask, __ATOMIC_ACQ_REL);
+        return (0 == (mark_bits_mask & v));
     }
 
     inline bool CAS(T* expected, bool marked, T* desired, bool mark)
     {
-        union_ptr_uintptr_t<T> pv_expected(expected);
-        union_ptr_uintptr_t<T> pv_desired(desired);
+        uintptr_t pv_expected = reinterpret_cast<uintptr_t>(expected);
+        uintptr_t pv_desired = reinterpret_cast<uintptr_t>(desired);
+
         if (marked)
         {
-            pv_expected.v |= mark_bits_mask;
+            pv_expected |= mark_bits_mask;
         }
+
         if (mark)
         {
-            pv_desired.v |= mark_bits_mask;
+            pv_desired |= mark_bits_mask;
         }
-        return __atomic_compare_exchange(&ptr_v.v, &pv_expected.v, &pv_desired.v,
+
+        return __atomic_compare_exchange(&upv, &pv_expected, &pv_desired,
                    false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+    }
+    
+    inline void reset()
+    {
+        upv = 0;
     }
 
     ~mark_ptr_type() = default;
