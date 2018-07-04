@@ -32,16 +32,12 @@ along with this file.  If not, see <http://www.gnu.org/licenses/>.
 #include <cstdio>
 #endif
 
-//FIXME: At the moment the typename T propagates to supporting classes,
-//which means even though we are dealing with pointers (albeit to different types),
-//code is needlessly replicated.
-//It should be possible to rework so that at the bottom end uintptr_t are used
-//with a few judiciously placed reinterpret_cast or dynamic_cast statements.
 namespace benedias {
     namespace concurrent {
         // Hazard pointer storage type for generic manipulation of hazard pointers
         // the algorithms only use pointer values not contents,
-        // so a single implementation independent of type suffices.
+        // so a single implementation independent of type suffices and generates,
+        // less code.
         typedef void*   hazptr_st;
         class hazp_pool_generic {
             private:
@@ -70,12 +66,11 @@ namespace benedias {
             protected:
             unsigned copy_hazard_pointers(void *dest, unsigned count)
             {
-                if (count > hp_count)
-                    count = hp_count;
-                std::memcpy(dest, haz_ptrs, count);
+                std::memcpy(dest, haz_ptrs, std::min(count, hp_count));
                 return count;
             }
 
+            // lock-free thread safe reservation of blocks of pointers.
             hazptr_st* reserve_impl(unsigned len)
             {
                 uint32_t    mask=1;
@@ -114,10 +109,16 @@ namespace benedias {
                 return reserved;
             }
 
+            // lock-free thread safe release of blocks of pointers.
             bool release_impl(hazptr_st* ptr)
             {
+                // To facilitate clients walking down a list of hazard pointer
+                // pools and invoking release until the correct pool instance
+                // actually releases the block, check address range, return
+                // false if the block does not belong to this pool instance.
                 if (ptr < &haz_ptrs[0] || ptr >= &haz_ptrs[hp_count])
                     return false;
+
                 uint32_t    mask=1;
                 for(auto x = 0; x < blk_size; x++)
                 {
@@ -141,11 +142,15 @@ namespace benedias {
                 }
 
                 return true;
-            }        
+            }
+
+            bool has_reservations()
+            {
+                return 0 != bitmap;
+            }
         };
 
-        //Pool of hazard pointers, which are allocated (reserve)
-        //and freed (release) atomically.
+        //This class is the wrapper for the generic hazard pool class.
         template <typename T> struct hazp_pool:hazp_pool_generic
         {
             // Pools of hazard pointers can be chained.
@@ -153,6 +158,8 @@ namespace benedias {
 
             hazp_pool(unsigned blk_size):hazp_pool_generic(blk_size){}
             ~hazp_pool()=default;
+
+            using hazp_pool_generic::has_reservations;
 
             inline unsigned block_size()
             {
@@ -191,26 +198,28 @@ namespace benedias {
         };
 
         // A hazard pointer domain defines the set of pointers protected
-        // and checked against at delete.
+        // and checked against for safe delete.
         template <typename T> class hazard_pointer_domain
         {
             private:
-            // For now keep two lists of hazard pointer pools
-            // TODO: Consider using a single list for pools, and
-            // allow pools with arbitrary block sizes;
-            // sizes. The down-side is performance at reservation and release,
-            // since single list would have to be traversed until the correct
-            // pool is found.
             // linked lists of hazard pointer pools.
+            // For lock-free operation this list is only ever added to
+            // over the lifetime of the domain.
+            // 
             hazp_pool<T>* pools_head = nullptr;
 
-            //list of deleted nodes overflow from hazard_pointer_context instances,
+            //list of deleted nodes, overflow from hazard_pointer_context instances,
             //or no longer in a hazard_pointer_context scope (the 
             //hazard_pointer_context instance was destroyed, but deletes were
             //pending).
-            //FIXME: volatile? or atomic load from/store to?
+            //To keep operations lock-free simplicity, this list is only added to,
+            // by inserting at the head of the list,
+            // Or swapped out with an empty list at processing time (see collect).
             hazp_delete_node<T>* delete_head = nullptr;
 
+            unsigned    num_hps=0;
+
+            //For simple lock-free operation, we push new pools to head of the list.
             void pools_new(hazp_pool<T>** phead, unsigned blocklen)
             {
                 hazp_pool<T>* pool = new hazp_pool<T>(blocklen);
@@ -219,18 +228,39 @@ namespace benedias {
                     pool->next = *phead;
                 }while(!__atomic_compare_exchange(phead, &pool->next, &pool,
                             false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED));
+                __atomic_fetch_add(&num_hps, pool->count(), __ATOMIC_RELEASE);
             }
 
+            //For simple lock-free operation, deleting of individual pools
+            //is not possible, but at domain destruction all pools must
+            //be deleted.
             void delete_pools(hazp_pool<T>* head)
             {
                 for(auto p = head; nullptr != p; )
                 {
+                    assert(!p->has_reservations());
                     auto pnext = p->next;
                     delete p;
                     p = pnext;
                 }
             }
 
+            // reserving hazard pointers is "expensive", 
+            // and is amortised at hazard pointer context creation,
+            // Which is not expected to be frequent.
+            T** pools_reserve(hazp_pool<T>* head, unsigned blocklen)
+            {
+                T** reservation = nullptr;
+                for(auto p = head; nullptr != p && nullptr == reservation; )
+                {
+                    reservation = p->reserve(blocklen);
+                }
+                return reservation;
+            }
+
+            // releasing hazard pointers is "expensive", 
+            // and is amortised at hazard pointer context destruction.
+            // which is not expected to be frequent.
             bool pools_release(hazp_pool<T>* head, T**ptr)
             {
                 bool released = false;
@@ -243,37 +273,16 @@ namespace benedias {
                 return released;
             }
 
-            unsigned pools_count_ptrs(hazp_pool<T>* head)
+            void pools_copy_ptrs(hazp_pool<T>* head, T**dest, unsigned len)
             {
                 unsigned count = 0;
-                for(auto p = head; nullptr != p; )
-                {
-                    count += p->count();
-                    p = p->next;
-                }
-                return count;
-            }
-
-            unsigned pools_copy_ptrs(hazp_pool<T>* head, T**dest, unsigned len)
-            {
-                unsigned count = 0;
-                for(auto p = head; nullptr != p; )
+                for(auto p = head; nullptr != p && count < len; )
                 {
                     assert(count + p->count() <= len);
                     count += p->copy_hazard_pointers(dest + count, p->count());
                     p = p->next;
                 }
-                return count;
-            }
-
-            T** pools_reserve(hazp_pool<T>* head, unsigned blocklen)
-            {
-                T** reservation = nullptr;
-                for(auto p = head; nullptr != p && nullptr == reservation; )
-                {
-                    reservation = p->reserve(blocklen);
-                }
-                return reservation;
+                assert(count == len);
             }
 
             public:
@@ -287,8 +296,8 @@ namespace benedias {
                 // FIXME: all associated hazard_pointer_context instances 
                 // should be destroyed. at the very least we should check
                 // assert, or emit a warning message.
-                // Alternatively hazard_pointer_context instances use a shared
-                // pointer to the hazard_pointer_domain.
+                // Alternatively, hazard_pointer_context instances can use a
+                // shared pointer to the hazard_pointer_domain.
                 assert(nullptr == delete_head);
                 delete_pools(pools_head);
            }
@@ -299,8 +308,8 @@ namespace benedias {
                 if (nullptr == reservation)
                 {
                     pools_new(&pools_head, blocklen);
+                    reservation = pools_reserve(pools_head, blocklen);
                 }
-                reservation = pools_reserve(pools_head, blocklen);
                 assert(nullptr != reservation);
                 return reservation;
             }
@@ -311,23 +320,29 @@ namespace benedias {
                 assert(released);
             }
 
+            // lock free, wait free push operation.
             void push_delete_node(hazp_delete_node<T>* del_node)
             {
                 hazp_delete_node<T>* desired = del_node;
                 do
                 {
+                    // Theoretically we only need to do this first time,
+                    // as the "expected" field is updated to the current 
+                    // value on failed __atomic_compare_exchange calls.
                     del_node->next = delete_head;
                 }
                 while(!__atomic_compare_exchange(&delete_head, &del_node->next, &desired,
                             false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED));
             }
 
+            // lock free, wait free push operation.
             inline void enqueue_for_delete(T* item_ptr)
             {
                 auto del_entry = new hazp_delete_node<T>(item_ptr);
                 push_delete_node(del_entry);
             }
 
+            // lock free, wait free push operations.
             void enqueue_for_delete(T** items_ptr, unsigned count)
             {
                 for(unsigned x = 0; x < count; ++x)
@@ -340,6 +355,7 @@ namespace benedias {
                 }
             }
 
+#if 0
             static int cmphp(const void* ap, const void* bp)
             {
                 hazptr_st v1 = *((hazptr_st*)ap);
@@ -350,23 +366,29 @@ namespace benedias {
                     return 1;
                 return 0;
             }
+#endif
 
             //TODO: try a version with vectors to measure performance.
             T** snapshot_ptrs(unsigned *pcount)
             {
-                unsigned count = pools_count_ptrs(pools_head);
+                // snapshot the number of pointers in the pools
+                unsigned count = num_hps;
 
-                *pcount = count;
                 T** hpvalues = new T*[count];
                 std::memset(hpvalues, 0, sizeof(*hpvalues) * count);
-                unsigned n_copied = pools_copy_ptrs(pools_head, hpvalues, count);
-                assert(n_copied == count);
+                // Then copy that number of pointers from the pools,
+                // if new pools have been added since the snapshot of the count,
+                // those values cannot be of interest in the snapshot *because*
+                // new pointers to deleted items cannot be created. 
+                pools_copy_ptrs(pools_head, hpvalues, count);
 
 #if 1       // clang memory sanitizer was generating errors even though qsort was not :-(
                 std::sort(hpvalues, hpvalues+count);
 #else
                 qsort(hpvalues, count, sizeof(hpvalues[0]), cmphp);
 #endif
+               
+                *pcount = count;
                 return hpvalues;
             }
 
@@ -392,18 +414,26 @@ namespace benedias {
 #endif
             }
 
-            //FIXME: serialise execution of this function.
+            //Serialisation of execution of this function, is not required.
             //FIXME: need to come up with a scheme to run this function
-            //often enough if there is items to be deleted.
+            //often enough if there are items to be deleted.
             void collect()
             {
-                hazp_delete_node<T>* del_head = __atomic_exchange_n(
+                // swap the global delete list with the empty local delete
+                // list, which is only accessed by the this function instance.
+                // Multiple instances of collect may run concurrently and safely,
+                // more often than not a single instance will have most if not all
+                // nodes to be deleted in its local delete list.
+                hazp_delete_node<T>* local_delete_head = __atomic_exchange_n(
                         &delete_head, nullptr,  __ATOMIC_ACQ_REL);
+
                 T** hp_values;
                 unsigned num_values;
                 hp_values = snapshot_ptrs(&num_values);
 
-                hazp_delete_node<T>** pprev = &del_head;
+                // Now check each node for safe deletion (no live pointers to
+                // the node in the snapshot (hpvalues)), and delete if possible.
+                hazp_delete_node<T>** pprev = &local_delete_head;
                 while(nullptr != *pprev)
                 {
                     hazp_delete_node<T>* cur = *pprev;
@@ -420,16 +450,19 @@ namespace benedias {
                         pprev = &cur->next;
                     }
                 }
+                // release the snapshot, we could use unique_ptr but this way
+                // is more efficient, with caveat that we have to be careful!
+                delete [] hp_values;
 
-                while(nullptr != del_head)
+                // if there are nodes that could not be deleted on the local list
+                // put then back on the global list.
+                while(nullptr != local_delete_head)
                 {
-                    auto del_entry = del_head;
-                    del_head = del_head->next;
+                    auto del_entry = local_delete_head;
+                    local_delete_head = local_delete_head->next;
                     push_delete_node(del_entry);
                 }
-                delete [] hp_values;
             }
-
         };
 
         //To use hazard pointers using  hazard_pointer_domain,
