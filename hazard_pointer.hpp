@@ -55,7 +55,7 @@ namespace benedias {
             hazp_pool_generic(unsigned bsize):blk_size(bsize),hp_count(bsize * NUM_HAZP_POOL_BLOCKS)
             {
                 haz_ptrs = new hazptr_st[hp_count];
-                std::memset(haz_ptrs, 0, sizeof(*haz_ptrs) * hp_count);
+                std::fill(haz_ptrs, haz_ptrs + hp_count, nullptr);
             }
 
             virtual ~hazp_pool_generic()
@@ -64,10 +64,12 @@ namespace benedias {
             }
 
             protected:
-            unsigned copy_hazard_pointers(void *dest, unsigned count) const
+            unsigned copy_hazard_pointers(hazptr_st *dest, unsigned count) const
             {
-                std::memcpy(dest, haz_ptrs, std::min(count, hp_count));
-                return count;
+                //copy must be of the whole block 
+                assert(count >= hp_count);
+                std::copy(haz_ptrs, haz_ptrs + hp_count, dest);
+                return hp_count;
             }
 
             // lock-free thread safe reservation of blocks of pointers.
@@ -183,7 +185,7 @@ namespace benedias {
 
             inline unsigned copy_hazard_pointers(T** dest, unsigned num) const
             {
-                return hazp_pool_generic::copy_hazard_pointers(dest, num);
+                return hazp_pool_generic::copy_hazard_pointers(reinterpret_cast<hazptr_st*>(dest), num);
             }
         };
 
@@ -355,9 +357,6 @@ namespace benedias {
                 }
 
                 T** hpvalues = new T*[count];
-
-                //FIXME: should not be required, since we are std::mempcpy pool hazard pointer blocks.
-                std::memset(hpvalues, 0, sizeof(*hpvalues) * count);
 
                 // Then copy that number of pointers from the pools,
                 // if new pools have been added since the snapshot of the count,
