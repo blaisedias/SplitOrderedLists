@@ -355,18 +355,6 @@ namespace benedias {
                 }
             }
 
-#if 0
-            static int cmphp(const void* ap, const void* bp)
-            {
-                hazptr_st v1 = *((hazptr_st*)ap);
-                hazptr_st v2 = *((hazptr_st*)bp);
-                if(v1 < v2)
-                    return -1;
-                if(v1 > v2)
-                    return 1;
-                return 0;
-            }
-#endif
 
             //TODO: try a version with vectors to measure performance.
             T** snapshot_ptrs(unsigned *pcount)
@@ -382,11 +370,7 @@ namespace benedias {
                 // new pointers to deleted items cannot be created. 
                 pools_copy_ptrs(pools_head, hpvalues, count);
 
-#if 1       // clang memory sanitizer was generating errors even though qsort was not :-(
                 std::sort(hpvalues, hpvalues+count);
-#else
-                qsort(hpvalues, count, sizeof(hpvalues[0]), cmphp);
-#endif
                
                 *pcount = count;
                 return hpvalues;
@@ -394,24 +378,7 @@ namespace benedias {
 
             inline bool search(T*value, T** hp_values, unsigned num_values)
             {
-#if 1       //clang memory sanitizer was generating errors even though bsearch or linear search was not :-(1
                 return std::binary_search(hp_values, hp_values + num_values, value);
-#else
-#if 1
-                return (nullptr == bsearch(value, hp_values, num_values, sizeof(*hp_values), cmphp));
-#else
-                for(unsigned x=0; x < num_values; ++x)
-                {
-                    if (nullptr == hp_values[x])
-                        continue;
-                    if (hp_values[x] == value)
-                    {
-                        return true;
-                    }
-                }
-#endif
-                return false;
-#endif
             }
 
             //Serialisation of execution of this function, is not required.
@@ -527,13 +494,8 @@ namespace benedias {
                     {
                         // Could not delete anything, so enqueue for delete
                         // on the domain.
-#if 0
-                        domain->enqueue_for_delete(deleted[del_index -1]);
-                        deleted[--del_index] = nullptr;
-#else
                         domain->enqueue_for_delete(deleted, R);
                         del_index = 0;
-#endif
                     }
                     else
                     {
