@@ -64,7 +64,7 @@ namespace benedias {
             }
 
             protected:
-            unsigned copy_hazard_pointers(void *dest, unsigned count)
+            unsigned copy_hazard_pointers(void *dest, unsigned count) const
             {
                 std::memcpy(dest, haz_ptrs, std::min(count, hp_count));
                 return count;
@@ -166,7 +166,7 @@ namespace benedias {
                 return hazp_pool_generic::blk_size;
             }
 
-            inline unsigned count()
+            inline unsigned count() const
             { 
                 return hazp_pool_generic::hp_count;
             }
@@ -181,7 +181,7 @@ namespace benedias {
                 return hazp_pool_generic::release_impl(reinterpret_cast<hazptr_st*>(ptr));
             }
 
-            inline unsigned copy_hazard_pointers(T** dest, unsigned num)
+            inline unsigned copy_hazard_pointers(T** dest, unsigned num) const
             {
                 return hazp_pool_generic::copy_hazard_pointers(dest, num);
             }
@@ -217,8 +217,6 @@ namespace benedias {
             // Or swapped out with an empty list at processing time (see collect).
             hazp_delete_node<T>* delete_head = nullptr;
 
-            unsigned    num_hps=0;
-
             //For simple lock-free operation, we push new pools to head of the list.
             void pools_new(hazp_pool<T>** phead, unsigned blocklen)
             {
@@ -228,7 +226,6 @@ namespace benedias {
                     pool->next = *phead;
                 }while(!__atomic_compare_exchange(phead, &pool->next, &pool,
                             false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED));
-                __atomic_fetch_add(&num_hps, pool->count(), __ATOMIC_RELEASE);
             }
 
             //For simple lock-free operation, deleting of individual pools
@@ -273,14 +270,13 @@ namespace benedias {
                 return released;
             }
 
-            void pools_copy_ptrs(hazp_pool<T>* head, T**dest, unsigned len)
+            void pools_copy_ptrs(const hazp_pool<T>* head, T**dest, unsigned len)
             {
                 unsigned count = 0;
-                for(auto p = head; nullptr != p && count < len; )
+                for(auto p = head; nullptr != p && count < len; p = p->next)
                 {
                     assert(count + p->count() <= len);
                     count += p->copy_hazard_pointers(dest + count, p->count());
-                    p = p->next;
                 }
                 assert(count == len);
             }
@@ -359,8 +355,15 @@ namespace benedias {
             //TODO: try a version with vectors to measure performance.
             T** snapshot_ptrs(unsigned *pcount)
             {
-                // snapshot the number of pointers in the pools
-                unsigned count = num_hps;
+                unsigned count = 0;
+                // snapshot the pools, by copying the head pointer.
+                // pools are not deleted, and new pools are added to the start
+                // of the list.
+                const hazp_pool<T>* pools = pools_head;
+                for(auto p = pools; nullptr != p; p=p->next)
+                {
+                    count += p->count();
+                }
 
                 T** hpvalues = new T*[count];
                 std::memset(hpvalues, 0, sizeof(*hpvalues) * count);
@@ -368,7 +371,7 @@ namespace benedias {
                 // if new pools have been added since the snapshot of the count,
                 // those values cannot be of interest in the snapshot *because*
                 // new pointers to deleted items cannot be created. 
-                pools_copy_ptrs(pools_head, hpvalues, count);
+                pools_copy_ptrs(pools, hpvalues, count);
 
                 std::sort(hpvalues, hpvalues+count);
                
