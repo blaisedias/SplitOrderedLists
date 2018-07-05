@@ -199,6 +199,8 @@ namespace benedias {
             ~hazp_delete_node()=default;
         };
 
+        template <typename T> class hazard_pointers_snapshot;
+
         // A hazard pointer domain defines the set of pointers protected
         // and checked against for safe delete.
         template <typename T> class hazard_pointer_domain
@@ -272,6 +274,7 @@ namespace benedias {
                 return released;
             }
 
+            template <typename U> friend class hazard_pointers_snapshot; 
             public:
 
             hazard_pointer_domain()=default;
@@ -342,43 +345,6 @@ namespace benedias {
                 }
             }
 
-
-            //TODO: try a version with vectors to measure performance.
-            T** snapshot_ptrs(unsigned *pcount)
-            {
-                unsigned count = 0;
-                // snapshot the pools, by copying the head pointer.
-                // pools are not deleted, and new pools are added to the start
-                // of the list.
-                const hazp_pool<T>* pools = pools_head;
-                for(auto p = pools; nullptr != p; p=p->next)
-                {
-                    count += p->count();
-                }
-
-                T** hpvalues = new T*[count];
-
-                // Then copy that number of pointers from the pools,
-                // if new pools have been added since the snapshot of the count,
-                // those values cannot be of interest in the snapshot *because*
-                // new pointers to deleted items cannot be created. 
-                unsigned ncopied = 0;
-                for(auto p = pools; nullptr != p; p = p->next)
-                {
-                    ncopied += p->copy_hazard_pointers(hpvalues + ncopied, p->count());
-                }
-                assert(ncopied == count);
-                std::sort(hpvalues, hpvalues+count);
-               
-                *pcount = count;
-                return hpvalues;
-            }
-
-            inline bool search(T*value, T** hp_values, unsigned num_values)
-            {
-                return std::binary_search(hp_values, hp_values + num_values, value);
-            }
-
             //Serialisation of execution of this function, is not required.
             //FIXME: need to come up with a scheme to run this function
             //often enough if there are items to be deleted.
@@ -392,9 +358,7 @@ namespace benedias {
                 hazp_delete_node<T>* local_delete_head = __atomic_exchange_n(
                         &delete_head, nullptr,  __ATOMIC_ACQ_REL);
 
-                T** hp_values;
-                unsigned num_values;
-                hp_values = snapshot_ptrs(&num_values);
+                hazard_pointers_snapshot<T>  hps(*this);
 
                 // Now check each node for safe deletion (no live pointers to
                 // the node in the snapshot (hpvalues)), and delete if possible.
@@ -402,7 +366,7 @@ namespace benedias {
                 while(nullptr != *pprev)
                 {
                     hazp_delete_node<T>* cur = *pprev;
-                    if (!search(cur->payload, hp_values, num_values))
+                    if (!hps.search(cur->payload))
                     {
                         // delink
                         *pprev = cur->next;
@@ -415,9 +379,6 @@ namespace benedias {
                         pprev = &cur->next;
                     }
                 }
-                // release the snapshot, we could use unique_ptr but this way
-                // is more efficient, with caveat that we have to be careful!
-                delete [] hp_values;
 
                 // if there are nodes that could not be deleted on the local list
                 // put then back on the global list.
@@ -428,6 +389,67 @@ namespace benedias {
                     push_delete_node(del_entry);
                 }
             }
+        };
+
+        template <typename T> class hazard_pointers_snapshot
+        {
+            const hazp_pool<T>* pools;
+            //TODO: try a version with vectors to measure performance.
+            T** ptrvalues = nullptr;
+            T** begin = nullptr;
+            T** end = nullptr;
+            unsigned size = 0;
+            public:
+                hazard_pointers_snapshot(hazard_pointer_domain<T>& domain):pools(domain.pools_head)
+                {
+                    // snapshot the pools, by copying the head pointer.
+                    // pools are not deleted, and new pools are added to the start
+                    // of the list.
+                    for(auto p = pools; nullptr != p; p=p->next)
+                    {
+                        size += p->count();
+                    }
+                    ptrvalues = new T*[size];
+                    // Then copy that number of pointers from the pools,
+                    // if new pools have been added since the snapshot of the count,
+                    // those values cannot be of interest in the snapshot *because*
+                    // new pointers to deleted items cannot be created. 
+                    unsigned count = 0;
+                    for(auto p = pools; nullptr != p; p = p->next)
+                    {
+                        count += p->copy_hazard_pointers(ptrvalues + count, p->count());
+                    }
+                    assert(count == size);
+                    end = ptrvalues + size;
+                    begin = ptrvalues;
+                    std::sort(begin, end);
+                    // move begin to the last entry with a nullptr value
+                    // if it exists.
+                    // variation on binary search.
+                    do
+                    {
+                        unsigned halfc = count >> 1;
+                        if(begin[halfc] == nullptr)
+                        {
+                            begin += halfc;
+                            count -= halfc;
+                        }
+                        else
+                        {
+                            count = halfc;
+                        }
+                    }while(count > 1);
+                }
+
+                ~hazard_pointers_snapshot()
+                {
+                    delete [] ptrvalues;
+                }
+                
+                inline bool search(T* ptr)
+                {
+                    return std::binary_search(begin, end, ptr);
+                }
         };
 
         //To use hazard pointers using  hazard_pointer_domain,
@@ -471,12 +493,10 @@ namespace benedias {
                 if (del_index == R)
                 {
                     // overflow
-                    T** hp_values;
-                    unsigned num_values;
-                    hp_values = domain->snapshot_ptrs(&num_values);
+                    hazard_pointers_snapshot<T>  hps(*domain);
                     for(unsigned ix=0; ix < R; ++ix)
                     {
-                        if (!domain->search(deleted[ix], hp_values, num_values))
+                        if (!hps.search(deleted[ix]))
                         {
                             // on delete zero out the array field,
                             // and reduce the delete index var.
@@ -485,7 +505,6 @@ namespace benedias {
                             deleted[ix] = nullptr;
                         }
                     }
-                    delete [] hp_values;
 
                     // del_index is not guaranteed to be valid here
                     if (del_index == R)
