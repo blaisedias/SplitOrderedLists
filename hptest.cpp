@@ -74,6 +74,7 @@ struct  B
 // Simple test of hazard pointer deletion.
 void test0()
 {
+indent();std::cout << "test0 nested hazard_pointer_context scopes, use public members functions at and store to access hazard pointers." << std::endl;
 indent();std::cout << "hpdom scope start" << std::endl;
     {
         ++scope;
@@ -119,6 +120,7 @@ indent();std::cout << "hpdom scope end" << std::endl;
 // using hazard_pointer<T>
 void test1()
 {
+indent();std::cout << "test2 nested hazard_pointer_context scopes, use public member hazard_ptrs to access." << std::endl;
 indent();std::cout << "hpdom scope start" << std::endl;
     {
         ++scope;
@@ -161,30 +163,90 @@ indent();std::cout << "hp1 scope end" << std::endl;
 indent();std::cout << "hpdom scope end" << std::endl;
 }
 
+// Simple test of hazard pointer deletion.
+// using hazard_pointer<T>
+void test2()
+{
+    std::array<B*, 20> tcs;
+    for(auto i=0; i < tcs.size(); ++i)
+    {
+        tcs[i] = new B(i);
+    }
+indent();std::cout << "test2 nested hazard_pointer_context scopes, innermost scope has R=0" << std::endl;
+indent();std::cout << "hpdom scope start" << std::endl;
+    {
+        ++scope;
+        auto hpdom = hazard_pointer_domain<B>();
+indent();std::cout << "hp1 scope start" << std::endl;
+        {
+            ++scope;
+            auto hpc1 = hazard_pointer_context<B, 3, 6>(&hpdom);
+            auto hps1 = hpc1.hazard_ptrs;
+            hps1[0] = tcs[1];
+            hps1[1] = tcs[2];
+            hps1[2] = tcs[3];
+indent();std::cout << "hp1 hazps are " << hpc1.at(0) << ", " << hpc1.at(1) << ", " << hpc1.at(2) << std::endl;
+indent();std::cout << "hp2 scope start" << std::endl;
+            {
+                ++scope;
+                auto hpc2 = hazard_pointer_context<B, 3, 0>(&hpdom);
+                hpc2.hazard_ptrs[0] = tcs[4];
+indent();std::cout << "hp2 hazps are " << hpc1.at(0) << std::endl;
+                indent();std::cout << "hp2 delete " << tcs[1] << std::endl;
+                hpc2.delete_item(tcs[1]);
+                indent();std::cout << "hp2 delete " << tcs[2] << std::endl;
+                hpc2.delete_item(tcs[2]);
+                indent();std::cout << "hp2 delete " << tcs[3] << std::endl;
+                hpc2.delete_item(tcs[3]);
+                indent();std::cout << "hp2 delete " << tcs[4] <<  std::endl;
+                hpc2.delete_item(tcs[4]);
+            }
+            --scope;
+indent();std::cout << "hp2 scope end" << std::endl;
+        }
+        --scope;
+indent();std::cout << "hp1 scope end" << std::endl;
+    }
+    --scope;
+indent();std::cout << "hpdom scope end" << std::endl;
+}
+
+
 
 int main( int argc, char* argv[] )
 {
+    typedef void(*testfuncptr)();
+    std::array<testfuncptr, 3> testfuncs{{test0, test1, test2}};
     std::setlocale(LC_ALL, "en_US.UTF-8");
     std::srand(std::time(nullptr)); // use current time as seed for random generator
-    void (*tf)() = test0;
     if (argc < 2)
-        tf();
-    for(int n=1; n < argc; ++n)
     {
-        switch(*argv[n])
+        for(int v = 0; v < testfuncs.size(); ++v)
         {
-            case '0':
-                test0(); break;
-            case '1':
-                test1(); break;
-#if  0                
-            case '2':
-                tf = test2; break;
-            case '3':
-                tf = test3; break;
-            case 'x':
-                tf = testx; break;
-#endif
+            testfuncs[v]();
+            std::cout << "\n" << std::endl;
+        }
+    }
+    else
+    {
+        for(int n=1; n < argc; ++n)
+        {
+            char *ep;
+            unsigned v = strtoul(argv[n], &ep, 0);
+            if (ep && *ep)
+            {
+                std::cout << "garbage test number? " << argv[n] << std::endl;
+                continue;
+            }
+            if (v < testfuncs.size())
+            {
+                testfuncs[v]();
+                std::cout << ep << "\n" << std::endl;
+            }
+            else
+            {
+                std::cout << "Unknown test number " << v << std::endl;
+            }
         }
     }
     std::cout << "All Done. " << std::endl;

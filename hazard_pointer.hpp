@@ -97,7 +97,7 @@ namespace benedias {
             uint32_t    bitmap=0;
 
             protected:
-            static constexpr unsigned  NUM_HAZP_CHUNK_BLOCKS=32;
+            static constexpr unsigned  NUM_HAZP_CHUNK_BLOCKS=sizeof(bitmap)*8;
             static constexpr uint32_t  FULL = UINT32_MAX;
 
             const unsigned  blk_size;
@@ -640,10 +640,11 @@ namespace benedias {
             T** hp_block;
 
             public:
-            const unsigned num_hazard_pointers;
+            /// Number of hazard pointers in the array.
+            const unsigned size;
             hazard_pointer<T> *hazard_ptrs = nullptr;
 
-            hazard_pointer_context(hazard_pointer_domain<T>* dom):domain(dom),num_hazard_pointers(S)
+            hazard_pointer_context(hazard_pointer_domain<T>* dom):domain(dom),size(S)
             {
                 hp_block = domain->reserve(S);
                 for(unsigned x=0; x<R; ++x) { deleted[x] = nullptr;}
@@ -673,16 +674,23 @@ namespace benedias {
             /// Safely delete an object or schedule the object deletion.
             void delete_item(T* item_ptr)
             {
-                assert(del_index <= R);
-                deleted[del_index] = item_ptr;
-                ++del_index;
-
-                // Number of deleted objects has reached the limit
-                // of local storage, attempt to delete.
-                if (del_index == R)
+                if (R > 0)
                 {
-                    // overflow
-                    reclaim();
+                    assert(del_index <= R);
+                    deleted[del_index] = item_ptr;
+                    ++del_index;
+
+                    // Number of deleted objects has reached the limit
+                    // of local storage, attempt to delete.
+                    if (del_index == R)
+                    {
+                        // overflow
+                        reclaim();
+                    }
+                }
+                else
+                {
+                    domain->enqueue_for_delete(item_ptr);
                 }
             }
 
@@ -735,20 +743,20 @@ namespace benedias {
 
             T* store(unsigned index, T** pptr)
             {
-                assert(index < num_hazard_pointers);
+                assert(index < size);
                 __atomic_store(hp_block + index, pptr, __ATOMIC_RELEASE);
                 return *hp_block + index;
             }
 
             void store(unsigned index, T* ptr)
             {
-                assert(index < num_hazard_pointers);
+                assert(index < size);
                 __atomic_store_n(hp_block + index, ptr, __ATOMIC_RELEASE);
             }
 
             T* at(unsigned index)
             {
-                assert(index < num_hazard_pointers);
+                assert(index < size);
                 return *(hp_block + index);
             }
         };
