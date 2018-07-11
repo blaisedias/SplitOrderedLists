@@ -217,9 +217,14 @@ namespace benedias {
             /// time when it can be "safely assumed" that further reservations will not
             /// be made.
             /// \@return true if there are active reservations within the chunk.
-            bool has_reservations()
+            inline bool has_reservations()
             {
                 return 0 != bitmap;
+            }
+
+            inline unsigned size()
+            {
+                return hp_count;
             }
         };
 
@@ -237,6 +242,7 @@ namespace benedias {
             ~hazp_chunk()=default;
 
             using hazp_chunk_generic::has_reservations;
+            using hazp_chunk_generic::size;
 
             inline unsigned block_size()
             {
@@ -288,6 +294,9 @@ namespace benedias {
             /// over the lifetime of the domain.
             hazp_chunk<T>* pools_head = nullptr;
 
+            // domain hazard pointer count
+            int    hp_count=0;
+
             /// list of delete nodes, overflow from hazard_pointer_context instances,
             /// or no longer in a hazard_pointer_context scope (the
             /// hazard_pointer_context instance was destroyed, but deletes were
@@ -297,17 +306,30 @@ namespace benedias {
             /// Or atomically swapped out with an empty list at processing time,
             /// (see collect).
             hazp_delete_node<T>* delete_head = nullptr;
+            // domain pending deletes count.
+            // This counter is used trigger collect cycles when the number
+            // of deletes exceeds the number of hazard pointers.
+            // delete_count and the delete list cannot both
+            // be updated  in a single atomic operation.
+            // For this reason delete_count is in reality a close approximation
+            // of the length of the delete list.
+            // For trigerring purposes this approximation is considered good enough.
+            // Because delete_count is zeroed out before the delete list is 
+            // swapped out its value may be higher than the number of pending
+            // deletes.
+            int    delete_count=0;
 
             /// For lock-free operation, we push new hazard pointer chunks
             /// to head of the list (pool) atomically.
             void pools_new(hazp_chunk<T>** phead, unsigned blocklen)
             {
-                hazp_chunk<T>* pool = new hazp_chunk<T>(blocklen);
+                hazp_chunk<T>* chunk = new hazp_chunk<T>(blocklen);
                 do
                 {
-                    pool->next = *phead;
-                }while(!__atomic_compare_exchange(phead, &pool->next, &pool,
+                    chunk->next = *phead;
+                }while(!__atomic_compare_exchange(phead, &chunk->next, &chunk,
                             false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED));
+                hp_count += chunk->size(); 
             }
 
             /// Attempt to fulfill a reservation request by requesting
@@ -410,37 +432,66 @@ namespace benedias {
                 }
                 while(!__atomic_compare_exchange(&delete_head, &del_node->next, &desired,
                             false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED));
+                __atomic_add_fetch(&delete_count, 1, __ATOMIC_RELEASE);
             }
 
             /// Add a pointer to the delete list.
             /// Creates and pushes a delete node onto the delete list,
             /// lock free and wait free.
-            inline void enqueue_for_delete(T* item_ptr)
+            inline void enqueue_for_delete(T* item_ptr, bool can_collect=true)
             {
                 auto del_entry = new hazp_delete_node<T>(item_ptr);
                 push_delete_node(del_entry);
+
+                if (can_collect && delete_count > hp_count)
+                {
+                    // zero the delete count to reduce triggering multiple concurrent
+                    // collect cycles.
+                    // pre-emptive scheduling means that it is possible,
+                    // that multiple threads enter collect cycles concurrently,
+                    // because the check and clearing of the delete counter
+                    // are not atomic. 
+                    // Multiple collect cycles can be run concurrently without compromising
+                    // integrity, but this would be more expensive than it should be.
+                    __atomic_store_n(&delete_count, 0, __ATOMIC_RELEASE);
+                    collect();
+                }
             }
 
             /// Add a set of pointers to the delete list.
             /// Creates and pushes a delete nodes onto the delete list,
             /// lock free and wait free.
-            void enqueue_for_delete(T** items_ptr, unsigned count)
+            void enqueue_for_delete(T** items_ptr, unsigned count, bool can_collect=true)
             {
                 for(unsigned x = 0; x < count; ++x)
                 {
                     if (nullptr != items_ptr[x])
                     {
-                        enqueue_for_delete(items_ptr[x]);
+                        push_delete_node(new hazp_delete_node<T>(items_ptr[x]));
                         items_ptr[x] = nullptr;
                     }
+                }
+
+                if (can_collect && delete_count > hp_count)
+                {
+                    // zero the delete count to reduce triggering multiple concurrent
+                    // collect cycles.
+                    // pre-emptive scheduling means that it is possible,
+                    // that multiple threads enter collect cycles concurrently,
+                    // because the check and clearing of the delete counter
+                    // are not atomic. 
+                    // Multiple collect cycles can be run concurrently without compromising
+                    // integrity, but this would be more expensive than it should be.
+                    __atomic_store_n(&delete_count, 0, __ATOMIC_RELEASE);
+                    collect();
                 }
             }
 
             /// Delete objects on the delete list if no live pointers to
             /// those objects exist.
-            /// Note: Serialisation of execution of this function, is not required.
-            /// FIXME: A scheme needs to be designed such that this function
-            /// is run often enough when delete list is not empty.
+            /// Serialising the execution of this function, is not required,
+            /// because ownership of the shared delete list, is transferred
+            /// atomically to thread running the collect function.
             void collect()
             {
                 // swap the shared delete list with the empty local delete
@@ -451,11 +502,24 @@ namespace benedias {
                 hazp_delete_node<T>* local_delete_head = __atomic_exchange_n(
                         &delete_head, nullptr,  __ATOMIC_ACQ_REL);
 
-                hazard_pointers_snapshot<T>  hps(*this);
+                if (nullptr == local_delete_head)
+                {
+                    // This can happen in the event that collect cycles were
+                    // triggered concurrently on different thread, because
+                    // the check and clear on the delete count is not atomic.
+                    return;
+                }
 
                 // Now check each node for safe deletion (no live pointers to
                 // the node in the snapshot (hpvalues)), and delete if possible.
                 hazp_delete_node<T>** pprev = &local_delete_head;
+                if(nullptr == *pprev)
+                {
+                    // nothing to do.
+                    return;
+                }
+                pprev = &local_delete_head;
+                hazard_pointers_snapshot<T>  hps(*this);
                 while(nullptr != *pprev)
                 {
                     hazp_delete_node<T>* cur = *pprev;

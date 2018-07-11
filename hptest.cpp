@@ -167,12 +167,12 @@ indent();std::cout << "hpdom scope end" << std::endl;
 // using hazard_pointer<T>
 void test2()
 {
-    std::array<B*, 20> tcs;
+indent();std::cout << "test2 nested hazard_pointer_context scopes, innermost scope has R=0" << std::endl;
+    std::array<B*, 4> tcs;
     for(auto i=0; i < tcs.size(); ++i)
     {
         tcs[i] = new B(i);
     }
-indent();std::cout << "test2 nested hazard_pointer_context scopes, innermost scope has R=0" << std::endl;
 indent();std::cout << "hpdom scope start" << std::endl;
     {
         ++scope;
@@ -181,6 +181,52 @@ indent();std::cout << "hp1 scope start" << std::endl;
         {
             ++scope;
             auto hpc1 = hazard_pointer_context<B, 3, 6>(&hpdom);
+            auto hps1 = hpc1.hazard_ptrs;
+            hps1[0] = tcs[0];
+            hps1[1] = tcs[1];
+            hps1[2] = tcs[3];
+indent();std::cout << "hp1 hazps are " << hpc1.at(0) << ", " << hpc1.at(1) << ", " << hpc1.at(2) << std::endl;
+indent();std::cout << "hp2 scope start" << std::endl;
+            {
+                ++scope;
+                auto hpc2 = hazard_pointer_context<B, 3, 0>(&hpdom);
+                hpc2.hazard_ptrs[0] = tcs[3];
+indent();std::cout << "hp2 hazps are " << hpc1.at(0) << std::endl;
+                for(auto b: tcs)
+                {
+indent();std::cout << "hp2 delete all " << b << std::endl;
+                    hpc2.delete_item(b);
+                }
+indent();std::cout << "hp2 delete all complete." << std::endl;
+            }
+            --scope;
+indent();std::cout << "hp2 scope end" << std::endl;
+        }
+        --scope;
+indent();std::cout << "hp1 scope end" << std::endl;
+    }
+    --scope;
+indent();std::cout << "hpdom scope end" << std::endl;
+}
+
+// Simple test of hazard pointer deletion.
+// using hazard_pointer<T>
+void test3()
+{
+indent();std::cout << "test2 nested hazard_pointer_context scopes, innermost scope has R=0, trigger collect cycle on delete item." << std::endl;
+    std::array<B*, 120> tcs;
+    for(auto i=0; i < tcs.size(); ++i)
+    {
+        tcs[i] = new B(i);
+    }
+indent();std::cout << "hpdom scope start" << std::endl;
+    {
+        ++scope;
+        auto hpdom = hazard_pointer_domain<B>();
+indent();std::cout << "hp1 scope start" << std::endl;
+        {
+            ++scope;
+            auto hpc1 = hazard_pointer_context<B, 3, 0>(&hpdom);
             auto hps1 = hpc1.hazard_ptrs;
             hps1[0] = tcs[1];
             hps1[1] = tcs[2];
@@ -192,14 +238,11 @@ indent();std::cout << "hp2 scope start" << std::endl;
                 auto hpc2 = hazard_pointer_context<B, 3, 0>(&hpdom);
                 hpc2.hazard_ptrs[0] = tcs[4];
 indent();std::cout << "hp2 hazps are " << hpc1.at(0) << std::endl;
-                indent();std::cout << "hp2 delete " << tcs[1] << std::endl;
-                hpc2.delete_item(tcs[1]);
-                indent();std::cout << "hp2 delete " << tcs[2] << std::endl;
-                hpc2.delete_item(tcs[2]);
-                indent();std::cout << "hp2 delete " << tcs[3] << std::endl;
-                hpc2.delete_item(tcs[3]);
-                indent();std::cout << "hp2 delete " << tcs[4] <<  std::endl;
-                hpc2.delete_item(tcs[4]);
+                indent();std::cout << "hp2 deleting all " << std::endl;
+                for(auto b: tcs)
+                {
+                    hpc2.delete_item(b);
+                }
             }
             --scope;
 indent();std::cout << "hp2 scope end" << std::endl;
@@ -216,7 +259,7 @@ indent();std::cout << "hpdom scope end" << std::endl;
 int main( int argc, char* argv[] )
 {
     typedef void(*testfuncptr)();
-    std::array<testfuncptr, 3> testfuncs{{test0, test1, test2}};
+    std::array<testfuncptr, 4> testfuncs{{test0, test1, test2, test3}};
     std::setlocale(LC_ALL, "en_US.UTF-8");
     std::srand(std::time(nullptr)); // use current time as seed for random generator
     if (argc < 2)
