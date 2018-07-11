@@ -808,23 +808,23 @@ namespace benedias {
             T* store(unsigned index, T** pptr)
             {
                 assert(index < size);
-                __atomic_store(hp_block + index, pptr, __ATOMIC_RELEASE);
-                return *hp_block + index;
+                hazard_ptrs[index] = pptr;
+                return hazard_ptrs[index]();
             }
 
             void store(unsigned index, T* ptr)
             {
                 assert(index < size);
-                __atomic_store_n(hp_block + index, ptr, __ATOMIC_RELEASE);
+                hazard_ptrs[index] = ptr;
             }
 
             T* at(unsigned index)
             {
                 assert(index < size);
-                return *(hp_block + index);
+                return hazard_ptrs[index]();
             }
         };
-    static_assert(sizeof(hazard_pointer<void>) == sizeof(void*));
+    static_assert(sizeof(hazard_pointer<void>) == sizeof(generic_hazptr_t));
     } //namespace concurrent
 } //namespace benedias
 #endif // #define BENEDIAS_HAZARD_POINTER_HPP
