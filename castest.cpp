@@ -84,23 +84,23 @@ class Rendezvous
 {
     private:
     // at rendezvous each thread calls ready (++num_ready), the waits for go == true
-    int     num_ready = 0;
+    std::size_t     num_ready = 0;
     // each threads increments after go == true, then executes task
     // and decrements when task complete
     int     in_task_count = 0;
     // at the end each thread calls complete (++num_complete)
-    int     num_complete = 0;
+    std::size_t     num_complete = 0;
     public:
     volatile bool       go=false;
 
     Rendezvous()=default;
     inline void ready() { __atomic_add_fetch(&num_ready, 1, __ATOMIC_SEQ_CST);}
-    inline int  ready_count() { return __atomic_load_n(&num_ready, __ATOMIC_SEQ_CST);}
+    inline std::size_t  ready_count() { return __atomic_load_n(&num_ready, __ATOMIC_SEQ_CST);}
     inline void start_task() { __atomic_add_fetch(&in_task_count, 1, __ATOMIC_SEQ_CST);}
     inline void end_task() { __atomic_sub_fetch(&in_task_count, 1, __ATOMIC_SEQ_CST);}
     inline int  task_count() { return __atomic_load_n(&in_task_count, __ATOMIC_SEQ_CST);}
     inline void complete() { __atomic_add_fetch(&num_complete, 1, __ATOMIC_SEQ_CST);}
-    inline int  complete_count() { return __atomic_load_n(&num_complete, __ATOMIC_SEQ_CST);}
+    inline std::size_t  complete_count() { return __atomic_load_n(&num_complete, __ATOMIC_SEQ_CST);}
 };
 
 typedef Rendezvous  * RendezvousPtr;
@@ -191,7 +191,7 @@ void test_1(B& head, test_thread_args& args, Rendezvous& rndvz)
 
 void test_thread_fn(B& head, test_thread_args& args, RendezvousPtrBlock& rpb)
 {
-    for (int x=0; x < num_nodes ; ++x)
+    for (std::size_t x=0; x < num_nodes ; ++x)
     {
         args.b[x].v = x;
         args.b[x].tid = std::this_thread::get_id();
@@ -199,7 +199,7 @@ void test_thread_fn(B& head, test_thread_args& args, RendezvousPtrBlock& rpb)
     args.tid = std::this_thread::get_id();
     args.tid_set = true;
 
-    for (auto i = 0; i < num_tests; i++)
+    for (std::size_t i = 0; i < num_tests; i++)
     {
         args.testfuncs[i](head, args, *rpb[i]);
     }
@@ -228,7 +228,7 @@ void check_test_0(B& head, std::vector<test_thread_args>& th_args, std::vector<s
     std::cout << (interleaves*100)/max_list_len << "%" << std::endl;
     std::size_t cas_count=0;
 
-    for(auto i = 0; i < num_threads; i++)
+    for(std::size_t i = 0; i < num_threads; i++)
     {
         cas_count += th_args[i].cas_count;
     }
@@ -253,7 +253,7 @@ int main( int argc, char* argv[] )
     Rendezvous   rendezvous[num_tests];
     RendezvousPtrBlock  rpb;
 
-    for(auto i = 0; i < num_tests; i++)
+    for(std::size_t i = 0; i < num_tests; i++)
     {
         rpb[i] = &rendezvous[i];
     }
@@ -261,16 +261,16 @@ int main( int argc, char* argv[] )
     test_thread_args::testfunc  testfuncs[num_tests] = {test_0, test_1};
     checkfunc  checkfuncs[num_tests] = {check_test_0, check_test_1};
 
-    for(auto i = 0; i < num_threads; i++)
+    for(std::size_t i = 0; i < num_threads; i++)
     {
         th_args.emplace_back(test_thread_args());
-        for (auto ii = 0 ; ii < num_tests; ++ii)
+        for (std::size_t ii = 0 ; ii < num_tests; ++ii)
         {
             th_args[i].testfuncs[ii] = testfuncs[ii];
         }
     }
 
-    for(auto i = 0; i < th_args.size(); i++)
+    for(std::size_t i = 0; i < th_args.size(); i++)
     {
         threads.emplace_back(std::thread(test_thread_fn, std::ref(head), std::ref(th_args[i]), 
                     std::ref(rpb)));
@@ -282,7 +282,7 @@ int main( int argc, char* argv[] )
     do
     {
         ready = true;
-        for (auto i = 0; i < num_threads; i++)
+        for (std::size_t i = 0; i < num_threads; i++)
         {
             ready = ready && th_args[i].tid_set;
         }
@@ -290,7 +290,7 @@ int main( int argc, char* argv[] )
     }while(!ready);
 
     std::cout << "main " << head << std::endl;
-    for (auto tn=0; tn < num_tests; ++tn)
+    for (std::size_t tn=0; tn < num_tests; ++tn)
     {
         std::cout << "Test " << tn  << ")" << std::endl;
         do

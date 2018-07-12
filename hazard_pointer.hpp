@@ -97,15 +97,15 @@ namespace benedias {
             uint32_t    bitmap=0;
 
             protected:
-            static constexpr unsigned  NUM_HAZP_CHUNK_BLOCKS=sizeof(bitmap)*8;
+            static constexpr std::size_t  NUM_HAZP_CHUNK_BLOCKS=sizeof(bitmap)*8;
             static constexpr uint32_t  FULL = UINT32_MAX;
 
-            const unsigned  blk_size;
-            const unsigned  hp_count;
+            const std::size_t  blk_size;
+            const std::size_t  hp_count;
 
             /// Constructor
             /// \@param blocksize the granularity of hazard pointer allocation desried.
-            hazp_chunk_generic(unsigned blocksize):blk_size(blocksize),hp_count(blocksize * NUM_HAZP_CHUNK_BLOCKS)
+            hazp_chunk_generic(std::size_t blocksize):blk_size(blocksize),hp_count(blocksize * NUM_HAZP_CHUNK_BLOCKS)
             {
                 haz_ptrs = new generic_hazptr_t[hp_count];
                 std::fill(haz_ptrs, haz_ptrs + hp_count, nullptr);
@@ -120,7 +120,7 @@ namespace benedias {
             /// Copy the entire set of hazard pointers managed by this instance.
             /// \@param dest - destination buffer
             /// \@prama count - size of the destination buffer.
-            unsigned copy_hazard_pointers(generic_hazptr_t *dest, unsigned count) const
+            std::size_t copy_hazard_pointers(generic_hazptr_t *dest, std::size_t count) const
             {
                 //copy must be of the whole chunk
                 assert(count >= hp_count);
@@ -134,7 +134,7 @@ namespace benedias {
             /// there is at least on free block.
             /// \@param len - the number of hazard pointers desired.
             /// \@return pointer to the block of hazard pointers or nullptr.
-            generic_hazptr_t* reserve_impl(unsigned len)
+            generic_hazptr_t* reserve_impl(std::size_t len)
             {
                 uint32_t    mask=1;
                 uint32_t    ix=0;
@@ -187,12 +187,12 @@ namespace benedias {
                     return false;
 
                 uint32_t    mask=1;
-                for(auto x = 0; x < blk_size; x++)
+                for(std::size_t x = 0; x < blk_size; x++)
                 {
                     if (nullptr != *(ptr +x)) 
                         __atomic_store_n(ptr + x, 0x0, __ATOMIC_RELEASE);
                 }
-                for(unsigned ix = 0; ix < NUM_HAZP_CHUNK_BLOCKS; ++ix)
+                for(std::size_t ix = 0; ix < NUM_HAZP_CHUNK_BLOCKS; ++ix)
                 {
                     if(ptr == &haz_ptrs[ix * blk_size])
                     {
@@ -222,7 +222,7 @@ namespace benedias {
                 return 0 != bitmap;
             }
 
-            inline unsigned size()
+            inline std::size_t size()
             {
                 return hp_count;
             }
@@ -238,23 +238,23 @@ namespace benedias {
             // Pools of hazard pointers can be chained.
             hazp_chunk<T> *next = nullptr;
 
-            hazp_chunk(unsigned blk_size):hazp_chunk_generic(blk_size){}
+            hazp_chunk(std::size_t blk_size):hazp_chunk_generic(blk_size){}
             ~hazp_chunk()=default;
 
             using hazp_chunk_generic::has_reservations;
             using hazp_chunk_generic::size;
 
-            inline unsigned block_size()
+            inline std::size_t block_size()
             {
                 return hazp_chunk_generic::blk_size;
             }
 
-            inline unsigned count() const
+            inline std::size_t count() const
             {
                 return hazp_chunk_generic::hp_count;
             }
 
-            inline T** reserve(unsigned len)
+            inline T** reserve(std::size_t len)
             {
                 return reinterpret_cast<T**>(hazp_chunk_generic::reserve_impl(len));
             }
@@ -264,7 +264,7 @@ namespace benedias {
                 return hazp_chunk_generic::release_impl(reinterpret_cast<generic_hazptr_t*>(ptr));
             }
 
-            inline unsigned copy_hazard_pointers(T** dest, unsigned num) const
+            inline std::size_t copy_hazard_pointers(T** dest, std::size_t num) const
             {
                 return hazp_chunk_generic::copy_hazard_pointers(reinterpret_cast<generic_hazptr_t*>(dest), num);
             }
@@ -321,7 +321,7 @@ namespace benedias {
 
             /// For lock-free operation, we push new hazard pointer chunks
             /// to head of the list (pool) atomically.
-            void pools_new(hazp_chunk<T>** phead, unsigned blocklen)
+            void pools_new(hazp_chunk<T>** phead, std::size_t blocklen)
             {
                 hazp_chunk<T>* chunk = new hazp_chunk<T>(blocklen);
                 do
@@ -340,7 +340,7 @@ namespace benedias {
             /// \@param head - start of pool of hazard pointer chunks.
             /// \@param blocklen - num of hazard pointers required
             /// \@return - nullptr or pointer to the block of hazard pointers.
-            T** pools_reserve(hazp_chunk<T>* head, unsigned blocklen)
+            T** pools_reserve(hazp_chunk<T>* head, std::size_t blocklen)
             {
                 T** reservation = nullptr;
                 for(auto p = head; nullptr != p && nullptr == reservation; )
@@ -399,7 +399,7 @@ namespace benedias {
             /// Fulfill a reservation request using the pool of hazard pointer chunks
             /// creating new hazard pointer chunks if required.
             /// \@param blocklen - the number hazard pointers required.
-            T** reserve(unsigned blocklen)
+            T** reserve(std::size_t blocklen)
             {
                 T** reservation = pools_reserve(pools_head, blocklen);
                 if (nullptr == reservation)
@@ -461,9 +461,9 @@ namespace benedias {
             /// Add a set of pointers to the delete list.
             /// Creates and pushes a delete nodes onto the delete list,
             /// lock free and wait free.
-            void enqueue_for_delete(T** items_ptr, unsigned count, bool can_collect=true)
+            void enqueue_for_delete(T** items_ptr, std::size_t count, bool can_collect=true)
             {
-                for(unsigned x = 0; x < count; ++x)
+                for(std::size_t x = 0; x < count; ++x)
                 {
                     if (nullptr != items_ptr[x])
                     {
@@ -558,7 +558,7 @@ namespace benedias {
             T** ptrvalues = nullptr;
             T** begin = nullptr;
             T** end = nullptr;
-            unsigned size = 0;
+            std::size_t size = 0;
             public:
                 hazard_pointers_snapshot(hazard_pointer_domain<T>& domain):pools(domain.pools_head)
                 {
@@ -574,7 +574,7 @@ namespace benedias {
                     // if new pools have been added since the snapshot of the count,
                     // those values cannot be of interest in the snapshot *because*
                     // new pointers to deleted items cannot be created.
-                    unsigned count = 0;
+                    std::size_t count = 0;
                     for(auto p = pools; nullptr != p; p = p->next)
                     {
                         count += p->copy_hazard_pointers(ptrvalues + count, p->count());
@@ -588,7 +588,7 @@ namespace benedias {
                     // variation on binary search.
                     do
                     {
-                        unsigned halfc = count >> 1;
+                        std::size_t halfc = count >> 1;
                         if(begin[halfc] == nullptr)
                         {
                             begin += halfc;
@@ -650,7 +650,7 @@ namespace benedias {
                     return p;
                 }
 
-            template <typename U, unsigned US, unsigned UR> friend class hazard_pointer_context;
+            template <typename U, std::size_t US, std::size_t UR> friend class hazard_pointer_context;
 
                 hazard_pointer& operator=(hazard_pointer<T>* other)
                 {
@@ -695,27 +695,27 @@ namespace benedias {
         /// in "Safe Memory Reclamation for Dynamic Lock-Free Objects
         /// Using Atomic Reads and Write".
         /// The implementation is not verbatim.
-        template <typename T, unsigned S, unsigned R> class hazard_pointer_context
+        template <typename T, std::size_t S, std::size_t R> class hazard_pointer_context
         {
             private:
             hazard_pointer_domain<T>* domain;
             T* deleted[R];
-            unsigned del_index=0;
+            std::size_t del_index=0;
             T** hp_block;
+            hazard_pointer<T>* hazard_ptrs = nullptr;
 
             public:
             /// Number of hazard pointers in the array.
-            const unsigned size;
-            hazard_pointer<T> *hazard_ptrs = nullptr;
+            const std::size_t size;
 
             hazard_pointer_context(hazard_pointer_domain<T>* dom):domain(dom),size(S)
             {
                 hp_block = domain->reserve(S);
-                for(unsigned x=0; x<R; ++x) { deleted[x] = nullptr;}
+                for(std::size_t x=0; x<R; ++x) { deleted[x] = nullptr;}
                 //FIXME: throw exception.
                 assert(hp_block != nullptr);
                 hazard_ptrs = reinterpret_cast<hazard_pointer<T>*>(hp_block);
-                for(int i = 0; i < S; ++i)
+                for(std::size_t i = 0; i < S; ++i)
                 {
                     hazard_ptrs[i] = new (hp_block + i) hazard_pointer<T>();
                 }
@@ -723,16 +723,21 @@ namespace benedias {
 
             ~hazard_pointer_context()
             {
+                for(std::size_t i = 0; i < S; ++i)
+                {
+                    hazard_ptrs[i].~hazard_pointer<T>();
+                }
                 // Release the hazard pointers
                 domain->release(hp_block);
                 // Delegate deletion of nodes to be deleted
                 // to the domain.
                 domain->enqueue_for_delete(deleted, R);
                 domain->collect();
-                for(int i = 0; i < S; ++i)
-                {
-                    hazard_ptrs[i].~hazard_pointer<T>();
-                }
+            }
+
+            inline hazard_pointer<T>* hazard_pointers()
+            {
+                return hazard_ptrs;
             }
 
             /// Safely delete an object or schedule the object deletion.
@@ -763,7 +768,7 @@ namespace benedias {
             void reclaim()
             {
                 hazard_pointers_snapshot<T>  hps(*domain);
-                for(unsigned ix=0; ix < R; ++ix)
+                for(std::size_t ix=0; ix < R; ++ix)
                 {
                     if (!hps.search(deleted[ix]))
                     {
@@ -787,7 +792,7 @@ namespace benedias {
                 {
                     // deleted at least one, move undeleted items up,
                     // so that ix_delete is valid once again.
-                    unsigned ixd=0, ixs=R-1;
+                    std::size_t ixd=0, ixs=R-1;
                     while(ixd < ixs)
                     {
                         while(nullptr != deleted[ixd] && ixd < ixs)
@@ -805,20 +810,20 @@ namespace benedias {
                 }
             }
 
-            T* store(unsigned index, T** pptr)
+            T* store(std::size_t index, T** pptr)
             {
                 assert(index < size);
                 hazard_ptrs[index] = pptr;
                 return hazard_ptrs[index]();
             }
 
-            void store(unsigned index, T* ptr)
+            void store(std::size_t index, T* ptr)
             {
                 assert(index < size);
                 hazard_ptrs[index] = ptr;
             }
 
-            T* at(unsigned index)
+            T* at(std::size_t index)
             {
                 assert(index < size);
                 return hazard_ptrs[index]();
