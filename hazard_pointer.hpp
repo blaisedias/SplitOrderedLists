@@ -41,9 +41,9 @@ along with this file.  If not, see <http://www.gnu.org/licenses/>.
 ///   |___________________ hazard_pointer_context(1) (belongs to thread 3)
 ///   |___________________ hazard_pointer_context(1) (belongs to thread 4)
 ///
-///  a single instance of hazard_pointer_domain<T> is bound to a container of type T
-///  each thread which creates a hazard_pointer_context<T> bound to the 
-///  hazard_pointer_domain<T> instance.
+///  Typically a single instance of hazard_pointer_domain<T> is bound to a container of type T,
+///  every thread that needs to access the container creates a hazard_pointer_context<T> bound
+///  to the hazard_pointer_domain<T> instance.
 ///  Each hazard_pointer_context instance reserves blocks of hazard pointers by
 ///  requesting the hazard_pointer_domain<T>, which in turn uses or creates hazp_chunk<T>
 ///  of matching blocksize to fulfill the request.
@@ -54,28 +54,37 @@ along with this file.  If not, see <http://www.gnu.org/licenses/>.
 ///  lifetime of the hazard_pointer_domain<T> instance.
 ///     creation is always after creation of the hazard_pointer_domain
 ///     destruction is always before the destruction of the hazard_pointer_domain
-///  The primary function of the hazard_pointer_domain are
+///  The primary functions of the hazard_pointer_domain are
 ///     *) management of hazard pointer allocation to hazard_pointer_contexts
 ///     *) handling of hazard pointer deletion on overflow
 ///     *) handling of hazard pointer deletion after destruction of a hazard_pointer_context.
+///     *) facilitate creation of snapshots of the set hazard pointer values, for
+///          deletion checking.
 ///
 ///  hazard_pointer_context<T> instances can be created and destroyed as required, this
-///  flexibility makes writing code accessing the containers similar to standard containers.
+///  flexibility is intended to make code accessing the containers similar to standard containers.
+///  The pathological case where the number of items deleted exceeds the 
+///  delete array size, and none can be deleted due to liveness, is handled by queuing
+///  deletions onto the domain delete list.
+///
 ///  The tradeoffs are
 ///         amortisation cost may not be constant.
-///         deletion is more expensive than when using an array of hazard pointers.
+///         deletion is probably more expensive than when using a simple array of hazard pointers.
 ///         complexity of managing pools of hazard pointers
+///         memory fences used for hazard pointer chunk pool, so there is a performance
+///          hit on creation of hazard pointer chunk.
+///         memory fences used for delete lists on the hazard_pointer_domain, so there
+///          is a performance hit on deletes performed at the domain level.
 ///         the pool of hazard pointers only ever grows, it never shrinks.
-///         memory fences used for hazard pointer chunk pool
-///         memory fences used for delete list on the hazard_pointer_domain.
 ///
-///  TODO: it is possible to combine the deletions from multiple threads, by
-///     always queuing deletions on to the hazard pointer domain instance, at the cost
-///     of memory required to queue the deletion, and then performing the deletion
-///     at the hazard pointer domain level rather than the hazard pointer context.
-///     This may also make it possible to make amortisation cost more constant (only
-///     try actual deletions when the number of deletions is > than the total number
-///     of hazard pointers).
+///  It is possible to combine the deletions across all threads, by specifying the 
+///     delete queue length as 0.
+///     All deletions will be queued on to the hazard pointer domain instance.
+///     The cost is memory required to queue the deletion and fences required for
+///     thread safe queueing.
+///     However this increases the possibility of keeping the delete amortisation cost
+///     constant, actual deletions are only performed when the number of deletions is
+///      > than the total number of hazard pointers.
 ///
 namespace benedias {
     namespace concurrent {
@@ -280,7 +289,103 @@ namespace benedias {
             ~hazp_delete_node()=default;
         };
 
-        template <typename T> class hazard_pointers_snapshot;
+        // constexpr uintptr_t mark_bits_maskoff = ~1;
+
+        /// Takes a snapshot of the hazard pointers in a domain at a given
+        /// point in time.
+        template <typename T> class hazard_pointers_snapshot
+        {
+            const hazp_chunk<T>* pools;
+            //TODO: try a version with vectors to measure performance.
+            T** ptrvalues = nullptr;
+            T** begin = nullptr;
+            T** end = nullptr;
+            std::size_t size = 0;
+
+            void reset()
+            {
+                ptrvalues = begin = end = nullptr;
+                size = 0;
+                pools = nullptr;
+            }
+
+            public:
+                // Partially movable
+                hazard_pointers_snapshot(hazard_pointers_snapshot<T>&& other)
+                {
+                    pools = std::move(other.pools);
+                    ptrvalues = std::move(other.ptrvalues);
+                    begin = std::move(other.begin);
+                    end = std::move(other.end);
+                    size = std::move(other.size);
+                    other.reset();
+                }
+
+                hazard_pointers_snapshot& operator=(const hazard_pointers_snapshot<T>&& other)=delete;
+
+                hazard_pointers_snapshot(const hazp_chunk<T>* pools_head):pools(pools_head)
+                {
+                    // snapshot the pools, by copying the head pointer.
+                    // pools are not deleted, and new pools are added to the start
+                    // of the list.
+                    for(auto p = pools; nullptr != p; p=p->next)
+                    {
+                        size += p->count();
+                    }
+                    ptrvalues = new T*[size];
+                    // Then copy that number of pointers from the pools,
+                    // if new pools have been added since the snapshot of the count,
+                    // those values cannot be of interest in the snapshot *because*
+                    // new pointers to deleted items cannot be created.
+                    std::size_t count = 0;
+                    for(auto p = pools; nullptr != p; p = p->next)
+                    {
+                        count += p->copy_hazard_pointers(ptrvalues + count, p->count());
+                    }
+                    assert(count == size);
+                    end = ptrvalues + size;
+                    begin = ptrvalues;
+                    std::sort(begin, end);
+                    // move begin to the last entry with a nullptr value
+                    // if it exists.
+                    // variation on binary search.
+                    do
+                    {
+                        std::size_t halfc = count >> 1;
+                        if(begin[halfc] == nullptr)
+                        {
+                            begin += halfc;
+                            count -= halfc;
+                        }
+                        else
+                        {
+                            count = halfc;
+                        }
+                    }while(count > 1);
+
+                    /// TODO: only if underlying type is an instance of mark_ptr_type
+                    for(uintptr_t* p = reinterpret_cast<uintptr_t*>(begin);
+                            p < reinterpret_cast<uintptr_t*>(end);
+                            ++p)
+                    {
+                        *p &= mark_bits_maskoff;
+                    }
+                }
+
+                ~hazard_pointers_snapshot()
+                {
+                    if (nullptr != ptrvalues)
+                    {
+                        delete [] ptrvalues;
+                    }
+                }
+
+                inline bool search(T* ptr)
+                {
+                    return std::binary_search(begin, end, ptr);
+                }
+        };
+
 
         /// A hazard pointer domain defines the set of pointers protected
         /// and checked against for safe memory recalamation.
@@ -368,21 +473,18 @@ namespace benedias {
                 return released;
             }
 
-            template <typename U> friend class hazard_pointers_snapshot;
-            public:
-
             hazard_pointer_domain()=default;
+
+            /// Since the instances of domain pointers are accessible, 
+            /// are only accessible via shared pointers, this should
+            /// be run when the last live reference (shared pointer)
+            /// is destroyed.
             ~hazard_pointer_domain()
             {
                 // The domain is being destroyed, so all items scheduled for delete
                 // should be deleted.
                 collect();
 
-                // FIXME: all associated hazard_pointer_context instances
-                // should be destroyed. at the very least we should check
-                // assert, or emit a warning message.
-                // Alternatively, hazard_pointer_context instances can use a
-                // shared pointer to the hazard_pointer_domain.
                 assert(nullptr == delete_head);
 
                 // Now delete all pools.
@@ -394,6 +496,21 @@ namespace benedias {
                     delete p;
                     p = pnext;
                 }
+            }
+
+            public:
+            /// Create a hazard pointer domain object. 
+            /// The return type is std::shared ptr for safe access across
+            /// multiple thread scopes.
+            /// \return shared pointer to the domain object.
+            static std::shared_ptr<hazard_pointer_domain<T>> make()
+            {
+                // This round about way, to ensure that the lifetime of
+                // hazard pointer domain objects exceeds the lifetime of
+                // all associated hazard_pointer_context objects, so
+                // prevent access to the constructors and destructors.
+                struct makeT:public hazard_pointer_domain<T> {};
+                return std::make_shared<makeT>();
             }
 
             /// Fulfill a reservation request using the pool of hazard pointer chunks
@@ -519,7 +636,7 @@ namespace benedias {
                     return;
                 }
                 pprev = &local_delete_head;
-                hazard_pointers_snapshot<T>  hps(*this);
+                hazard_pointers_snapshot<T>  hps(pools_head);
                 while(nullptr != *pprev)
                 {
                     hazp_delete_node<T>* cur = *pprev;
@@ -545,79 +662,11 @@ namespace benedias {
                     push_delete_node(del_entry);
                 }
             }
-        };
 
-        // constexpr uintptr_t mark_bits_maskoff = ~1;
-
-        /// Takes a snapshot of the hazard pointers in a domain at a given
-        /// point in time.
-        template <typename T> class hazard_pointers_snapshot
-        {
-            const hazp_chunk<T>* pools;
-            //TODO: try a version with vectors to measure performance.
-            T** ptrvalues = nullptr;
-            T** begin = nullptr;
-            T** end = nullptr;
-            std::size_t size = 0;
-            public:
-                hazard_pointers_snapshot(hazard_pointer_domain<T>& domain):pools(domain.pools_head)
-                {
-                    // snapshot the pools, by copying the head pointer.
-                    // pools are not deleted, and new pools are added to the start
-                    // of the list.
-                    for(auto p = pools; nullptr != p; p=p->next)
-                    {
-                        size += p->count();
-                    }
-                    ptrvalues = new T*[size];
-                    // Then copy that number of pointers from the pools,
-                    // if new pools have been added since the snapshot of the count,
-                    // those values cannot be of interest in the snapshot *because*
-                    // new pointers to deleted items cannot be created.
-                    std::size_t count = 0;
-                    for(auto p = pools; nullptr != p; p = p->next)
-                    {
-                        count += p->copy_hazard_pointers(ptrvalues + count, p->count());
-                    }
-                    assert(count == size);
-                    end = ptrvalues + size;
-                    begin = ptrvalues;
-                    std::sort(begin, end);
-                    // move begin to the last entry with a nullptr value
-                    // if it exists.
-                    // variation on binary search.
-                    do
-                    {
-                        std::size_t halfc = count >> 1;
-                        if(begin[halfc] == nullptr)
-                        {
-                            begin += halfc;
-                            count -= halfc;
-                        }
-                        else
-                        {
-                            count = halfc;
-                        }
-                    }while(count > 1);
-
-                    /// TODO: only if underlying type is an instance of mark_ptr_type
-                    for(uintptr_t* p = reinterpret_cast<uintptr_t*>(begin);
-                            p < reinterpret_cast<uintptr_t*>(end);
-                            ++p)
-                    {
-                        *p &= mark_bits_maskoff;
-                    }
-                }
-
-                ~hazard_pointers_snapshot()
-                {
-                    delete [] ptrvalues;
-                }
-
-                inline bool search(T* ptr)
-                {
-                    return std::binary_search(begin, end, ptr);
-                }
+            inline hazard_pointers_snapshot<T> snapshot()
+            {
+                return std::move(hazard_pointers_snapshot<T>(pools_head));
+            }
         };
 
         template <typename T> class hazard_pointer
@@ -650,13 +699,13 @@ namespace benedias {
                     return p;
                 }
 
-            template <typename U, std::size_t US, std::size_t UR> friend class hazard_pointer_context;
-
                 hazard_pointer& operator=(hazard_pointer<T>* other)
                 {
                     __atomic_store(&ptr, &other->ptr, __ATOMIC_RELEASE);
                     return *this;
                 }
+
+            template <typename U, std::size_t US, std::size_t UR> friend class hazard_pointer_context;
 
             public:
                 hazard_pointer& operator=(T* nptr)
@@ -688,9 +737,8 @@ namespace benedias {
 
         };
 
-        /// To use hazard pointers in a hazard_pointer_domain,
-        /// create an instance of hazard_pointer_context.
-        /// This class is designed for use by a single thread.
+        /// This class encapsulates the execution context required for 
+        /// use of hazard_pointers by a single thread.
         /// It implements the SMR algorithm described by Maged Micheal,
         /// in "Safe Memory Reclamation for Dynamic Lock-Free Objects
         /// Using Atomic Reads and Write".
@@ -698,44 +746,59 @@ namespace benedias {
         template <typename T, std::size_t S, std::size_t R> class hazard_pointer_context
         {
             private:
-            hazard_pointer_domain<T>* domain;
-            T* deleted[R];
+            std::shared_ptr<hazard_pointer_domain<T>> domain;
+            T* deleted[R]={};
             std::size_t del_index=0;
-            T** hp_block;
-            hazard_pointer<T>* hazard_ptrs = nullptr;
+            hazard_pointer<T>*const hazard_ptrs;
 
             public:
             /// Number of hazard pointers in the array.
             const std::size_t size;
 
-            hazard_pointer_context(hazard_pointer_domain<T>* dom):domain(dom),size(S)
+            // Non copyable.
+            hazard_pointer_context(const hazard_pointer_context&) = delete;
+            hazard_pointer_context& operator=(const hazard_pointer_context&) = delete;
+
+            hazard_pointer_context& operator=(const hazard_pointer_context&& other)=delete;
+            // Partially movable, to allow returning of hazard_pointer_context objects.
+            hazard_pointer_context(hazard_pointer_context<T,S,R>&& other):
+                domain(std::move(other.domain)), hazard_ptrs(std::move(other.hazard_ptrs)),size(std::move(other.size))
             {
-                hp_block = domain->reserve(S);
-                for(std::size_t x=0; x<R; ++x) { deleted[x] = nullptr;}
+                for(unsigned i=0; i < R; ++i)
+                    deleted[i] = std::move(other.deleted[i]);
+                del_index = std::move(other.del_index);
+            }
+
+            hazard_pointer_context(std::shared_ptr<hazard_pointer_domain<T>> dom):
+                domain(dom), hazard_ptrs(reinterpret_cast<hazard_pointer<T>* const>(domain->reserve(S))), size(S)
+            {
                 //FIXME: throw exception.
-                assert(hp_block != nullptr);
-                hazard_ptrs = reinterpret_cast<hazard_pointer<T>*>(hp_block);
+                assert(hazard_ptrs != nullptr);
                 for(std::size_t i = 0; i < S; ++i)
                 {
-                    hazard_ptrs[i] = new (hp_block + i) hazard_pointer<T>();
+                    hazard_ptrs[i] = new (hazard_ptrs + i) hazard_pointer<T>();
                 }
             }
 
             ~hazard_pointer_context()
             {
-                for(std::size_t i = 0; i < S; ++i)
+                // we support partial move constructor, so maybe no domain.
+                if (domain)
                 {
-                    hazard_ptrs[i].~hazard_pointer<T>();
+                    for(std::size_t i = 0; i < S; ++i)
+                    {
+                        hazard_ptrs[i].~hazard_pointer<T>();
+                    }
+                    // Release the hazard pointers
+                    domain->release(reinterpret_cast<T**>(hazard_ptrs));
+                    // Delegate deletion of nodes to be deleted
+                    // to the domain.
+                    domain->enqueue_for_delete(deleted, R);
+                    domain->collect();
                 }
-                // Release the hazard pointers
-                domain->release(hp_block);
-                // Delegate deletion of nodes to be deleted
-                // to the domain.
-                domain->enqueue_for_delete(deleted, R);
-                domain->collect();
             }
 
-            inline hazard_pointer<T>* hazard_pointers()
+            inline hazard_pointer<T>* const hazard_pointers() const
             {
                 return hazard_ptrs;
             }
@@ -767,7 +830,7 @@ namespace benedias {
             /// or schedule reclamation for deleted object.
             void reclaim()
             {
-                hazard_pointers_snapshot<T>  hps(*domain);
+                hazard_pointers_snapshot<T>  hps = domain->snapshot();
                 for(std::size_t ix=0; ix < R; ++ix)
                 {
                     if (!hps.search(deleted[ix]))
@@ -829,7 +892,20 @@ namespace benedias {
                 return hazard_ptrs[index]();
             }
         };
-    static_assert(sizeof(hazard_pointer<void>) == sizeof(generic_hazptr_t));
+        static_assert(sizeof(hazard_pointer<void>) == sizeof(generic_hazptr_t),
+               "sizeof hazard_pointer class does not match preallocated storage.");
+
+        // Experimental class to demonstrate how a container class should handle
+        // creation of associated hazard_pointer_context objects.
+        template <typename T, std::size_t S, std::size_t R> class hazard_pointer_assoc
+        {
+            std::shared_ptr<hazard_pointer_domain<T>> dom = hazard_pointer_domain<T>::make();
+            public:
+            hazard_pointer_context<T, S, R> context()
+            {
+                return std::move(hazard_pointer_context<T, S, R>(dom));
+            }
+        };
     } //namespace concurrent
 } //namespace benedias
 #endif // #define BENEDIAS_HAZARD_POINTER_HPP

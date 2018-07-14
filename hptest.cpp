@@ -26,6 +26,7 @@ along with this file.  If not, see <http://www.gnu.org/licenses/>.
 #include <iostream>
 #include <memory>
 
+using   benedias::concurrent::hazard_pointer_assoc;
 using   benedias::concurrent::hazard_pointer_domain;
 using   benedias::concurrent::hazard_pointer_context;
 using   benedias::concurrent::hazard_pointer;
@@ -78,11 +79,12 @@ indent();std::cout << "test0 nested hazard_pointer_context scopes, use public me
 indent();std::cout << "hpdom scope start" << std::endl;
     {
         ++scope;
-        auto hpdom = hazard_pointer_domain<B>();
+        auto assoc = hazard_pointer_assoc<B, 3, 3>();
+//        auto hpdom = std::make_shared<hazard_pointer_domain<B>>();
 indent();std::cout << "hp1 scope start" << std::endl;
         {
             ++scope;
-            auto hpc1 = hazard_pointer_context<B, 3, 3>(&hpdom);
+            auto hpc1 = assoc.context();
             B* b1 = new B(1);
             B* b2 = new B(2);
             B* b3 = new B(3);
@@ -93,7 +95,7 @@ indent();std::cout << "hp1 hazps are " << hpc1.at(0) << ", " << hpc1.at(1) << ",
 indent();std::cout << "hp2 scope start" << std::endl;
             {
                 ++scope;
-                auto hpc2 = hazard_pointer_context<B, 3, 3>(&hpdom);
+                auto hpc2 = assoc.context();
                 B* b4 = new B(4);
                 hpc2.store(0, b4);
 indent();std::cout << "hp2 hazps are " << hpc1.at(0) << std::endl;
@@ -124,11 +126,11 @@ indent();std::cout << "test2 nested hazard_pointer_context scopes, use public me
 indent();std::cout << "hpdom scope start" << std::endl;
     {
         ++scope;
-        auto hpdom = hazard_pointer_domain<B>();
+        auto hpdom = hazard_pointer_domain<B>::make();
 indent();std::cout << "hp1 scope start" << std::endl;
         {
             ++scope;
-            auto hpc1 = hazard_pointer_context<B, 3, 6>(&hpdom);
+            auto hpc1 = hazard_pointer_context<B, 3, 6>(hpdom);
             auto hps1 = hpc1.hazard_pointers();
             B* b1 = new B(1);
             B* b2 = new B(2);
@@ -140,7 +142,7 @@ indent();std::cout << "hp1 hazps are " << hpc1.at(0) << ", " << hpc1.at(1) << ",
 indent();std::cout << "hp2 scope start" << std::endl;
             {
                 ++scope;
-                auto hpc2 = hazard_pointer_context<B, 3, 6>(&hpdom);
+                auto hpc2 = hazard_pointer_context<B, 3, 6>(hpdom);
                 B* b4 = new B(4);
                 hpc2.hazard_pointers()[0] = b4;
 indent();std::cout << "hp2 hazps are " << hpc1.at(0) << std::endl;
@@ -176,11 +178,11 @@ indent();std::cout << "test2 nested hazard_pointer_context scopes, innermost sco
 indent();std::cout << "hpdom scope start" << std::endl;
     {
         ++scope;
-        auto hpdom = hazard_pointer_domain<B>();
+        auto hpdom = hazard_pointer_domain<B>::make();
 indent();std::cout << "hp1 scope start" << std::endl;
         {
             ++scope;
-            auto hpc1 = hazard_pointer_context<B, 3, 6>(&hpdom);
+            auto hpc1 = hazard_pointer_context<B, 3, 6>(hpdom);
             auto hps1 = hpc1.hazard_pointers();
             hps1[0] = tcs[0];
             hps1[1] = tcs[1];
@@ -189,7 +191,7 @@ indent();std::cout << "hp1 hazps are " << hpc1.at(0) << ", " << hpc1.at(1) << ",
 indent();std::cout << "hp2 scope start" << std::endl;
             {
                 ++scope;
-                auto hpc2 = hazard_pointer_context<B, 3, 0>(&hpdom);
+                auto hpc2 = hazard_pointer_context<B, 3, 0>(hpdom);
                 hpc2.hazard_pointers()[0] = tcs[3];
 indent();std::cout << "hp2 hazps are " << hpc1.at(0) << std::endl;
                 for(auto b: tcs)
@@ -222,11 +224,11 @@ indent();std::cout << "test2 nested hazard_pointer_context scopes, innermost sco
 indent();std::cout << "hpdom scope start" << std::endl;
     {
         ++scope;
-        auto hpdom = hazard_pointer_domain<B>();
+        auto hpdom = hazard_pointer_domain<B>::make();
 indent();std::cout << "hp1 scope start" << std::endl;
         {
             ++scope;
-            auto hpc1 = hazard_pointer_context<B, 3, 0>(&hpdom);
+            auto hpc1 = hazard_pointer_context<B, 3, 0>(hpdom);
             auto hps1 = hpc1.hazard_pointers();
             hps1[0] = tcs[1];
             hps1[1] = tcs[2];
@@ -235,7 +237,7 @@ indent();std::cout << "hp1 hazps are " << hpc1.at(0) << ", " << hpc1.at(1) << ",
 indent();std::cout << "hp2 scope start" << std::endl;
             {
                 ++scope;
-                auto hpc2 = hazard_pointer_context<B, 3, 0>(&hpdom);
+                auto hpc2 = hazard_pointer_context<B, 3, 0>(hpdom);
                 hpc2.hazard_pointers()[0] = tcs[4];
 indent();std::cout << "hp2 hazps are " << hpc1.at(0) << std::endl;
                 indent();std::cout << "hp2 deleting all " << std::endl;
@@ -255,11 +257,11 @@ indent();std::cout << "hpdom scope end" << std::endl;
 }
 
 
-
 int main( int argc, char* argv[] )
 {
     typedef void(*testfuncptr)();
     std::array<testfuncptr, 4> testfuncs{{test0, test1, test2, test3}};
+//    std::array<testfuncptr, 4> testfuncs{{test0}};
     std::setlocale(LC_ALL, "en_US.UTF-8");
     std::srand(std::time(nullptr)); // use current time as seed for random generator
     if (argc < 2)
