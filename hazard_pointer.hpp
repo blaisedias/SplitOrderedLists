@@ -46,7 +46,7 @@ along with this file.  If not, see <http://www.gnu.org/licenses/>.
 ///  to the hazard_pointer_domain<T> instance.
 ///  Each hazard_pointer_context instance reserves blocks of hazard pointers by
 ///  requesting the hazard_pointer_domain<T>, which in turn uses or creates hazp_chunk<T>
-///  of matching blocksize to fulfill the request.
+///  of matching block size to fulfil the request.
 ///  The lifetime of hazp_chunk<T> is bound to the hazard_pointer_domain,
 ///     creation is always after creation of the hazard_pointer_domain
 ///     destruction is when the hazard_pointer_domain is destroyed.
@@ -64,7 +64,7 @@ along with this file.  If not, see <http://www.gnu.org/licenses/>.
 ///  hazard_pointer_context<T> instances can be created and destroyed as required, this
 ///  flexibility is intended to make code accessing the containers similar to standard containers.
 ///  The pathological case where the number of items deleted exceeds the 
-///  delete array size, and none can be deleted due to liveness, is handled by queuing
+///  delete array size, and none can be deleted due to liveness, is handled by queueing
 ///  deletions onto the domain delete list.
 ///
 ///  The tradeoffs are
@@ -222,8 +222,8 @@ namespace benedias {
             }
 
             /// Returns simple reservation status for this chunk.
-            /// This function is a helper function, intended for checking at destructor
-            /// time when it can be "safely assumed" that further reservations will not
+            /// This function is a helper function, intended for checking at destruction
+            /// when it can be "safely assumed" that further reservations will not
             /// be made.
             /// \@return true if there are active reservations within the chunk.
             inline bool has_reservations()
@@ -239,7 +239,7 @@ namespace benedias {
 
         /// This class is a type wrapper for the generic hazard pool class,
         /// allows us to keep all "dangerous" casting restricted, as opposed to
-        /// peppering the codebase.
+        /// peppering the code base.
         /// It is also has fields to facilitate chaining of hazard pointer chunks
         /// into a list.
         template <typename T> struct hazp_chunk:hazp_chunk_generic
@@ -388,9 +388,9 @@ namespace benedias {
 
 
         /// A hazard pointer domain defines the set of pointers protected
-        /// and checked against for safe memory recalamation.
+        /// and checked against for safe memory reclamation.
         /// Typically a hazard pointer domain instance will be associated with
-        /// a single instance of a conatiner class.
+        /// a single instance of a container class.
         template <typename T> class hazard_pointer_domain
         {
             private:
@@ -418,7 +418,7 @@ namespace benedias {
             // be updated  in a single atomic operation.
             // For this reason delete_count is in reality a close approximation
             // of the length of the delete list.
-            // For trigerring purposes this approximation is considered good enough.
+            // For triggering purposes this approximation is considered good enough.
             // Because delete_count is zeroed out before the delete list is 
             // swapped out its value may be higher than the number of pending
             // deletes.
@@ -437,13 +437,13 @@ namespace benedias {
                 hp_count += chunk->size(); 
             }
 
-            /// Attempt to fulfill a reservation request by requesting
+            /// Attempt to fulfil a reservation request by requesting
             /// a block from with the pool of hazard pointer chunks.
             /// Reserving hazard pointers is "expensive",
             /// and is amortised at hazard pointer context creation,
             /// which is not expected to be frequent operation.
             /// \@param head - start of pool of hazard pointer chunks.
-            /// \@param blocklen - num of hazard pointers required
+            /// \@param blocklen - number of hazard pointers required
             /// \@return - nullptr or pointer to the block of hazard pointers.
             T** pools_reserve(hazp_chunk<T>* head, std::size_t blocklen)
             {
@@ -513,7 +513,7 @@ namespace benedias {
                 return std::make_shared<makeT>();
             }
 
-            /// Fulfill a reservation request using the pool of hazard pointer chunks
+            /// Fulfil a reservation request using the pool of hazard pointer chunks
             /// creating new hazard pointer chunks if required.
             /// \@param blocklen - the number hazard pointers required.
             T** reserve(std::size_t blocklen)
@@ -564,7 +564,7 @@ namespace benedias {
                 {
                     // zero the delete count to reduce triggering multiple concurrent
                     // collect cycles.
-                    // pre-emptive scheduling means that it is possible,
+                    // preemptive scheduling means that it is possible,
                     // that multiple threads enter collect cycles concurrently,
                     // because the check and clearing of the delete counter
                     // are not atomic. 
@@ -593,7 +593,7 @@ namespace benedias {
                 {
                     // zero the delete count to reduce triggering multiple concurrent
                     // collect cycles.
-                    // pre-emptive scheduling means that it is possible,
+                    // preemptive scheduling means that it is possible,
                     // that multiple threads enter collect cycles concurrently,
                     // because the check and clearing of the delete counter
                     // are not atomic. 

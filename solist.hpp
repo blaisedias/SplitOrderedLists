@@ -40,7 +40,7 @@ namespace benedias {
 
     // FIXME: @insert this effectively reduces the hash space for reverse
     // hashes by half, since 1 bit is "lost" by virtue overwritten, increasing
-    // the likelihood fo collisions. This could be alleviated at a cost in space
+    // the likelihood of collisions. This could be alleviated at a cost in space
     // and execution time by storing the original hash value in the node.
     inline so_key sol_node_key(hash_t hashv)
     {
@@ -310,7 +310,7 @@ namespace benedias {
         void get_parent(uint32_t slot, so_key key)
         {
 get_parent_try_again:
-            //find the intiialised bucket with highest key value 
+            //find the initialised bucket with highest key value
             //that is lower than key.
             so_key key_step = sol_bucket_key(so_list->n_buckets/2);
             so_key pb_key = key;
