@@ -2,7 +2,7 @@
 
 Copyright (C) 2017,2018  Blaise Dias
 
-sharedobj is free software: you can redistribute it and/or modify
+This file is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 2 of the License, or
 (at your option) any later version.
@@ -13,7 +13,7 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with sharedobj.  If not, see <http://www.gnu.org/licenses/>.
+along with this file.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #ifndef BENEDIAS_SOLIST_HPP
