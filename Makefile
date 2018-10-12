@@ -25,12 +25,12 @@ TESTSRC = test/src
 BIN = ./bin
 OD = ./obj
 LIBS = $(TARG_LIBS) -lpthread
-SANITIZE =  -fsanitize=safe-stack 
+#SANITIZE =  -fsanitize=safe-stack
 SANITIZE =  -fsanitize=address -fno-omit-frame-pointer -fsanitize=undefined
 #SANITIZE =  -fsanitize=memory -fno-omit-frame-pointer -fsanitize=undefined
 GD = ./Makefile
 CF = -std=c++17 -Wall -g $(TARG_CF) $(DEFS) $(SANITIZE)
-CC = clang++
+CC = g++
 
 OBJS = 	
 
@@ -79,7 +79,7 @@ $(BIN)/test1 : $(OD)/test1.o $(OD)/solist.o | $(BIN)
 $(BIN)/test_expansion : $(OD)/test_expansion.o $(OD)/solist.o | $(BIN)
 	$(CC) $(CF) -o $(@) $^ $(LIBDIRS) $(LIBS)
 
-$(BIN)/hptest : $(OD)/hptest.o | $(BIN)
+$(BIN)/hptest : $(OD)/hptest.o $(OD)/hazard_pointer.o | $(BIN)
 	$(CC) $(CF) -o $(@) $^ $(LIBDIRS) $(LIBS)
 
 $(BIN)/castest : $(OD)/castest.o | $(BIN)

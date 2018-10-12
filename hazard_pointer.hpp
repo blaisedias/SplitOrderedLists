@@ -49,47 +49,57 @@ along with this file.  If not, see <http://www.gnu.org/licenses/>.
 ///  of matching block size to fulfil the request.
 ///  The lifetime of hazp_chunk<T> is bound to the hazard_pointer_domain,
 ///     creation is always after creation of the hazard_pointer_domain
-///     destruction is when the hazard_pointer_domain is destroyed.
+///     and destruction is when the hazard_pointer_domain is destroyed.
 ///  The lifetime of the hazard_pointer_context<T> instances lies within the 
 ///  lifetime of the hazard_pointer_domain<T> instance.
 ///     creation is always after creation of the hazard_pointer_domain
 ///     destruction is always before the destruction of the hazard_pointer_domain
-///  The primary functions of the hazard_pointer_domain are
+///  The primary functions of hazard_pointer_domain are
 ///     *) management of hazard pointer allocation to hazard_pointer_contexts
 ///     *) handling of hazard pointer deletion on overflow
 ///     *) handling of hazard pointer deletion after destruction of a hazard_pointer_context.
 ///     *) facilitate creation of snapshots of the set hazard pointer values, for
 ///          deletion checking.
 ///
-///  hazard_pointer_context<T> instances can be created and destroyed as required, this
-///  flexibility is intended to make code accessing the containers similar to standard containers.
+///  hazard_pointer_context<T> instances can be created and destroyed as required, the
+///  objective is to make code accessing the containers similar if not identical to
+///  standard containers.
+///
+///  Deleted items are "queued" in the hazard_pointer_context in an array of
+///  fixed size.
 ///  The pathological case where the number of items deleted exceeds the 
 ///  delete array size, and none can be deleted due to liveness, is handled by queueing
-///  deletions onto the domain delete list.
+///  deletions onto the domain delete list, memory is allocated to queue the deletion,
+///  which can result in blocking (FIXME: allow specifying memory allocator to
+///  facilitate use of non-blocking allocators)
 ///
-///  The tradeoffs are
-///         amortisation cost may not be constant.
-///         deletion is probably more expensive than when using a simple array of hazard pointers.
-///         complexity of managing pools of hazard pointers
-///         memory fences used for hazard pointer chunk pool, so there is a performance
-///          hit on creation of hazard pointer chunk.
-///         memory fences used for delete lists on the hazard_pointer_domain, so there
-///          is a performance hit on deletes performed at the domain level.
-///         the pool of hazard pointers only ever grows, it never shrinks.
+///  The tradeoffs 
+///         - amortisation cost is not constant.
+///         - deletion is more expensive than when using a simple array of hazard pointers.
+///         - memory fences used for delete lists on the hazard_pointer_domain, so there
+///            is a performance hit on deletes performed at the domain level.
+///
 ///
 ///  It is possible to combine the deletions across all threads, by specifying the 
-///     delete queue length as 0.
-///     All deletions will be queued on to the hazard pointer domain instance.
-///     The cost is memory required to queue the deletion and fences required for
-///     thread safe queueing.
-///     However this increases the possibility of keeping the delete amortisation cost
-///     constant, actual deletions are only performed when the number of deletions is
-///      > than the total number of hazard pointers.
+///  delete queue length as 0.
+///  All deletions will be queued on to the hazard pointer domain instance.
+///  The cost is memory required to queue the deletion and fences required for
+///  thread safe queueing.
+///  However this increases the possibility of keeping the delete amortisation cost
+///  constant, actual deletions are only performed when the number of deletions is
+///  > than the total number of hazard pointers.
 ///
+///  Notable features of this scheme and implementation
+///         - the pool of hazard pointers only ever grows, it never shrinks.
+///         - memory fences used for hazard pointer chunk pool, so there is a performance
+///            hit on creation of hazard pointer chunk.
+///         - hazard pointer chunks creation is linked to creation of hazard pointer 
+///             contexts.
 namespace benedias {
     namespace concurrent {
-        /// Hazard pointer storage type for generic manipulation of hazard pointers
-        /// the algorithms only use pointer values not contents, so type is no relevant.
+        /// Hazard pointer storage type for generic manipulation of hazard pointers.
+        /// The algorithms only use the pointer values and not the contents,
+        /// so type is not relevant.
         /// Using a generic type means a single implementation independent of type,
         /// suffices and generates less code.
         typedef void*   generic_hazptr_t;
@@ -114,112 +124,30 @@ namespace benedias {
 
             /// Constructor
             /// \@param blocksize the granularity of hazard pointer allocation desried.
-            hazp_chunk_generic(std::size_t blocksize):blk_size(blocksize),hp_count(blocksize * NUM_HAZP_CHUNK_BLOCKS)
-            {
-                haz_ptrs = new generic_hazptr_t[hp_count];
-                std::fill(haz_ptrs, haz_ptrs + hp_count, nullptr);
-            }
+            hazp_chunk_generic(std::size_t blocksize);
 
-            virtual ~hazp_chunk_generic()
-            {
-                delete [] haz_ptrs;
-            }
+            virtual ~hazp_chunk_generic();
 
             protected:
             /// Copy the entire set of hazard pointers managed by this instance.
             /// \@param dest - destination buffer
             /// \@prama count - size of the destination buffer.
-            std::size_t copy_hazard_pointers(generic_hazptr_t *dest, std::size_t count) const
-            {
-                //copy must be of the whole chunk
-                assert(count >= hp_count);
-                std::copy(haz_ptrs, haz_ptrs + hp_count, dest);
-                return hp_count;
-            }
+            std::size_t copy_hazard_pointers(generic_hazptr_t *dest, std::size_t count) const;
 
             /// lock-free thread safe reservation of blocks of pointers.
             /// reservation will only succeed if the requested length is
             /// matches the block size of the hazard pointer chunk, and
-            /// there is at least on free block.
+            /// there is at least one free block.
             /// \@param len - the number of hazard pointers desired.
             /// \@return pointer to the block of hazard pointers or nullptr.
-            generic_hazptr_t* reserve_impl(std::size_t len)
-            {
-                uint32_t    mask=1;
-                uint32_t    ix=0;
-                generic_hazptr_t*  reserved = nullptr;
-                uint32_t    expected = bitmap;
-
-                if (len != blk_size)
-                    return nullptr;
-                while (expected != FULL && nullptr == reserved)
-                {
-                    mask = 1;
-                    ix = 0;
-                    while (0 != (expected & mask) && ix < NUM_HAZP_CHUNK_BLOCKS)
-                    {
-                        mask <<= 1;
-                        ++ix;
-                    }
-
-                    if (ix < NUM_HAZP_CHUNK_BLOCKS)
-                    {
-                        uint32_t desired = expected | mask;
-                        if(__atomic_compare_exchange(&bitmap, &expected, &desired,
-                                false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
-                        {
-                            reserved = &haz_ptrs[ix * blk_size];
-                        }
-                        else
-                        {
-                            // CAS failed, so expected will have been updated to the new value
-                            // of bitmap.
-                        }
-                    }
-                }
-
-                return reserved;
-            }
+            generic_hazptr_t* reserve_impl(std::size_t len);
 
             /// lock-free thread safe release of blocks of pointers.
             /// The pointers are only "released" if supplied pointer is to a
-            /// block of hazard pointers managed by this chunk.
+            /// block of hazard pointers contained in this chunk.
             /// \@param pointer to the first hazard pointer in the block.
             /// \@return true if hazard pointers were released, false otherwise.
-            bool release_impl(generic_hazptr_t* ptr)
-            {
-                // To facilitate clients walking down a list of hazard pointer
-                // chunks and invoking release until the correct chunk instance
-                // actually releases the block, check address range, return
-                // false if the block does not belong to this chunk instance.
-                if (ptr < &haz_ptrs[0] || ptr >= &haz_ptrs[hp_count])
-                    return false;
-
-                uint32_t    mask=1;
-                for(std::size_t x = 0; x < blk_size; x++)
-                {
-                    if (nullptr != *(ptr +x)) 
-                        __atomic_store_n(ptr + x, 0x0, __ATOMIC_RELEASE);
-                }
-                for(std::size_t ix = 0; ix < NUM_HAZP_CHUNK_BLOCKS; ++ix)
-                {
-                    if(ptr == &haz_ptrs[ix * blk_size])
-                    {
-                        assert(mask == (bitmap & mask));
-                        uint32_t    expected, desired;
-                        do
-                        {
-                            expected = bitmap;
-                            desired = expected ^ mask;
-                        }while(!__atomic_compare_exchange(&bitmap, &expected, &desired,
-                                false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED));
-                        break;
-                    }
-                    mask <<= 1;
-                }
-
-                return true;
-            }
+            bool release_impl(generic_hazptr_t* ptr);
 
             /// Returns simple reservation status for this chunk.
             /// This function is a helper function, intended for checking at destruction
@@ -390,7 +318,8 @@ namespace benedias {
         /// A hazard pointer domain defines the set of pointers protected
         /// and checked against for safe memory reclamation.
         /// Typically a hazard pointer domain instance will be associated with
-        /// a single instance of a container class.
+        /// a single instance of a container class, but sharing across multiple
+        /// containers of the same type is not precluded.
         template <typename T> class hazard_pointer_domain
         {
             private:
@@ -415,12 +344,12 @@ namespace benedias {
             // This counter is used trigger collect cycles when the number
             // of deletes exceeds the number of hazard pointers.
             // delete_count and the delete list cannot both
-            // be updated  in a single atomic operation.
-            // For this reason delete_count is in reality a close approximation
+            // be updated  in a single atomic operation,
+            // is in reality delete_count is a close approximation
             // of the length of the delete list.
             // For triggering purposes this approximation is considered good enough.
-            // Because delete_count is zeroed out before the delete list is 
-            // swapped out its value may be higher than the number of pending
+            // delete_count is zeroed out before the delete list is 
+            // swapped out, so its value may be higher than the number of pending
             // deletes.
             int    delete_count=0;
 
@@ -440,8 +369,10 @@ namespace benedias {
             /// Attempt to fulfil a reservation request by requesting
             /// a block from with the pool of hazard pointer chunks.
             /// Reserving hazard pointers is "expensive",
-            /// and is amortised at hazard pointer context creation,
-            /// which is not expected to be frequent operation.
+            /// and occurs at hazard pointer context creation.
+            /// This performance hit can be amortised using a lock free pool
+            /// or cache, of hazard pointer contexts, this will increase memory
+            /// usage.
             /// \@param head - start of pool of hazard pointer chunks.
             /// \@param blocklen - number of hazard pointers required
             /// \@return - nullptr or pointer to the block of hazard pointers.
@@ -457,8 +388,10 @@ namespace benedias {
 
             /// Release previously reserved hazard pointer reservations.
             /// Releasing hazard pointers is "expensive",
-            /// and is amortised at hazard pointer context destruction.
-            /// which is not expected to be frequent.
+            /// and occurs at hazard pointer context creation.
+            /// This performance hit can be amortised using a lock free pool
+            /// or cache, of hazard pointer contexts, this will increase memory
+            /// usage.
             /// \@param head - pointer to list of hazard pointer blocks.
             /// \@param ptr - hazard pointer block to be released.
             bool pools_release(hazp_chunk<T>* head, T**ptr)
