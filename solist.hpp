@@ -38,10 +38,8 @@ namespace benedias {
     const   hash_t      DATABIT = 0x1;
     hash_t reverse_hasht_bits(hash_t hashv);
 
-    // FIXME: @insert this effectively reduces the hash space for reverse
-    // hashes by half, since 1 bit is "lost" by virtue overwritten, increasing
-    // the likelihood of collisions. This could be alleviated at a cost in space
-    // and execution time by storing the original hash value in the node.
+    // Nodes are marked by setting the lsb to 1, 
+    // this reduces the hash space by half.
     inline so_key sol_node_key(hash_t hashv)
     {
         return reverse_hasht_bits(hashv) | DATABIT;
@@ -191,10 +189,10 @@ namespace benedias {
             }
 
             //FIXME:
-            // Intuitively swapping in the the new buckets and n_buckets should
+            // Intuitively swapping in the new buckets and n_buckets should
             // be atomic w.r.t. other concurrent operations, so that matching
             // buckets and n_buckets pair values are accessed.
-            //Solution 1: ugly! :-(
+            //Solution 1: 
             // add another level of indirection, so_list will be a wrapper around another
             // class which has the buckets and n_buckets fields, extra level
             // of indirection has performance impact.
@@ -434,7 +432,7 @@ find_node_try_again:
         // insert is the most expensive operation because
         // it is the best location to amortise some of the 
         // cost of automatic expanding the number of buckets.
-        // FIXME: explore using bucket item counters,
+        // FIXME: explore using bucket item counters.
         // complexity getting the counts correct on bucket split.
         bool insert_node(hash_t hashv, T payload)
         {
@@ -490,7 +488,7 @@ find_node_try_again:
                     // 1) the bucket is overflows by a factor of 2 FIXME (make the factor configurable) 
                     //      this can happen for pathological insert sequences where
                     //      inserts are to the same bucket repeatedly.
-                    // 2) the all buckets are full
+                    // 2) all the buckets are full
                     if (
                             (steps >= ((so_list->max_bucket_length * 2)))
                             ||
