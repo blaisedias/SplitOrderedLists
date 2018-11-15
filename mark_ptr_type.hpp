@@ -55,6 +55,11 @@ template <typename T> class mark_ptr_type
         return reinterpret_cast<T*>(upv & mark_bits_maskoff);
     }
 
+    inline T** address()
+    {
+        return reinterpret_cast<T**>(&upv);
+    }
+
     explicit mark_ptr_type()
     {
     }
