@@ -104,6 +104,10 @@ namespace benedias {
         /// suffices and generates less code.
         typedef void*   generic_hazptr_t;
 
+        /// Initialisation function, made thread safe using std::call_once.
+        /// function call will block until initialisation is complete.
+        void hazard_pointer_global_init();
+
         /// hazard pointer pool, manages reservation and release of a hazard
         /// pointers in blocks of a size fixed at creation time.
         /// A collection of hazard pointer pools form the set of hazard pointers
@@ -360,7 +364,10 @@ namespace benedias {
             /// \@param ptr - hazard pointer block to be released.
             bool pools_release(hazptr_pool* head, generic_hazptr_t* ptr);
 
-            hazptr_domain()=default;
+            hazptr_domain()
+            {
+                hazard_pointer_global_init();
+            }
 
             /// Since the instances of domain pointers are only accessible, 
             /// through shared pointers, this will be run when the last live

@@ -215,8 +215,8 @@ namespace benedias {
     {
         std::shared_ptr<solist<T>> so_list;
 
-        solist_bucket *cur;
         solist_bucket *next;
+        solist_bucket *cur;
         solist_bucket *prev;
         unsigned    steps;
 

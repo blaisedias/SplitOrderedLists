@@ -15,14 +15,35 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this file.  If not, see <http://www.gnu.org/licenses/>.
 */
+#include <mutex>
 #include "hazard_pointer.hpp"
 
 namespace benedias {
     namespace concurrent {
 
+static std::once_flag   init_flag;
+static void initialise()
+{
+}
+
+void hazard_pointer_global_init()
+{
+    try
+    {
+        std::call_once(init_flag, initialise);
+    }
+    catch (...)
+    {
+        // FIXME: 
+        assert(false);
+    }
+}
+
 // hazptr_pool member functions
         hazptr_pool::hazptr_pool(std::size_t blocksize):blk_size(blocksize),hp_count(blocksize * HAZPTR_POOL_BLOCKS)
         {
+            // This allocation can be blocking, it will be called as part of the 
+            // setup for hazard_pointer_context.
             haz_ptrs = new generic_hazptr_t[hp_count];
             std::fill(haz_ptrs, haz_ptrs + hp_count, nullptr);
         }        
@@ -36,8 +57,15 @@ namespace benedias {
         {
             //copy must be of the whole pool
             assert(count >= hp_count);
+#if 0
             std::copy(haz_ptrs, haz_ptrs + hp_count, dest);
             return hp_count;
+#else
+            generic_hazptr_t *dest_end
+                = std::copy_if(haz_ptrs, haz_ptrs + hp_count, dest,
+                        [](generic_hazptr_t sp){return nullptr !=sp;});
+            return dest_end - dest;
+#endif
         }
 
         generic_hazptr_t* hazptr_pool::reserve_impl(std::size_t len)
@@ -151,20 +179,24 @@ namespace benedias {
             {
                 size += p->count();
             }
+            //FIXME: use lockless allocator, especially for inline
+            // collect cycles. If collection is restricted to a thread
+            // dedicated for that purpose then we can use the std allocator.
             ptrvalues = new generic_hazptr_t[size];
             // Then copy that number of pointers from the pools,
             // if new pools have been added since the snapshot of the count,
             // those values cannot be of interest in the snapshot *because*
-            // new pointers to deleted items cannot be created.
+            // new pointers to deleted items *will not* be created.
             std::size_t count = 0;
             for(auto p = pools; nullptr != p; p = p->next)
             {
                 count += p->copy_hazard_pointers(ptrvalues + count, p->count());
             }
-            assert(count == size);
-            end = ptrvalues + size;
+            assert(count <= size);
+            end = ptrvalues + count;
             begin = ptrvalues;
             std::sort(begin, end);
+#if 0
             // move begin to the last entry with a nullptr value
             // if it exists.
             // variation on binary search.
@@ -181,7 +213,7 @@ namespace benedias {
                     count = halfc;
                 }
             }while(count > 1);
-
+#endif
             /// TODO: only if underlying type is an instance of mark_ptr_type
             for(uintptr_t* p = reinterpret_cast<uintptr_t*>(begin);
                     p < reinterpret_cast<uintptr_t*>(end);
@@ -202,6 +234,8 @@ namespace benedias {
 //hazptr_domain member functions
             /// For lock-free operation, we push new hazard pointer pools
             /// to head of the list (pool) atomically.
+            /// Note that allocation of the hazptr pool may block,
+            /// but that will not affect concurrent operations.
             void hazptr_domain::pools_new(hazptr_pool** phead, std::size_t blocklen)
             {
                 hazptr_pool* pool = new hazptr_pool(blocklen);
@@ -317,6 +351,7 @@ namespace benedias {
             /// lock free and wait free.
             void hazptr_domain::enqueue_for_delete(generic_hazptr_t item_ptr, domain_reclaimer& reclaimer)
             {
+                //FIXME: use non-blocking allocator.
                 auto del_entry = new hazp_delete_node(item_ptr, reclaimer);
                 push_delete_node(del_entry);
             }
@@ -331,6 +366,7 @@ namespace benedias {
                 {
                     if (nullptr != items_ptr[x])
                     {
+                        //FIXME: use non-blocking allocator.
                         push_delete_node(new hazp_delete_node(items_ptr[x], reclaimer));
                         items_ptr[x] = nullptr;
                     }
