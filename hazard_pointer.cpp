@@ -58,6 +58,7 @@ void hazard_pointer_global_init()
             //copy must be of the whole pool
             assert(count >= hp_count);
 #if 0
+#if 0
             std::copy(haz_ptrs, haz_ptrs + hp_count, dest);
             return hp_count;
 #else
@@ -66,6 +67,18 @@ void hazard_pointer_global_init()
                         [](generic_hazptr_t sp){return nullptr !=sp;});
             return dest_end - dest;
 #endif
+#endif
+            std::size_t ix_dst = 0;
+            for(std::size_t ix_src = 0; ix_src < hp_count; ++ix_src)
+            {
+                generic_hazptr_t p = __atomic_load_n(haz_ptrs + ix_src, __ATOMIC_ACQUIRE);
+                if (nullptr != p)
+                {
+                    dest[ix_dst] = p;
+                    ++ix_dst;
+                }
+            }
+            return ix_dst;
         }
 
         generic_hazptr_t* hazptr_pool::reserve_impl(std::size_t len)
