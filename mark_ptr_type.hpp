@@ -1,6 +1,6 @@
 /*
 
-Copyright (C) 2018  Blaise Dias
+Copyright (C) 2018-2019  Blaise Dias
 
 This file is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by

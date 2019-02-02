@@ -1,10 +1,8 @@
 /*
 
-Copyright (C) 2014,2015  Blaise Dias
+Copyright (C) 2014-2019  Blaise Dias
 
-This file is part of sqzbsrv.
-
-sqzbsrv is free software: you can redistribute it and/or modify
+This file is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 2 of the License, or
 (at your option) any later version.
